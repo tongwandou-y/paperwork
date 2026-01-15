@@ -16,17 +16,21 @@ clc;clear;close all;
 % ！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
 prbs_base_name = 'PRBS31'; % 例如: 'PRBS23' 或 'PRBS31'
 run_mode = 'test';        % 设置为: 'train' 或 'test'
-received_optical_power = -16;     % 设置接收光功率 (对应文件名中的数字，如 -10, -14, -18 等)
-suduandlength = '20Gsyms_30km_';  % 速率和距离标识 (注意包含下划线)
+received_optical_power = -20;     % 设置接收光功率 (对应文件名中的数字，如 -10, -14, -18 等)
+suduandlength = '20Gsyms_30km';  % 速率和距离标识 (注意包含下划线)
+quant = 12; % 手动修改为量化比特数 (必须与发射端一致！)
+
+% --- 存放 PRBS txt 文件的目录 --- (必须与发射端一致！)
+data_dir = 'D:\paperwork\PRBS_Data';
 
 % --- VPI .csv 文件所在的路径 ---
-vpi_data_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\VPI_Output_Data_csv'; 
+vpi_data_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\VPI_Output_Data_csv'; 
 
 % --- .mat 参数文件所在的路径 ---
-param_load_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\TX_Matlab_Param_mat';
+param_load_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\TX_Matlab_Param_mat';
 
 % --- .mat 文件保存的路径 ---
-mat_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\NN_Input_Data_mat';
+mat_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\NN_Input_Data_mat';
 
 %% === 2. 加载参数 (根据 run_mode 自动处理) ===
 if strcmpi(run_mode, 'train')
@@ -37,8 +41,8 @@ else
     error("无效的 'run_mode'。请在脚本顶部设置为 'train' 或 'test'。");
 end
 
-% 构造参数文件名 (例如: DRoF_PCM_Parameters_PRBS23_train.mat)
-param_filename = sprintf('DRoF_PCM_Parameters_%s_%s.mat', prbs_base_name, run_mode);
+% 构造参数文件名 (例如: DRoF_PCM_Parameters_PRBS23_8bit_train.mat)
+param_filename = sprintf('DRoF_PCM_Parameters_%s_%dbit_%s.mat', prbs_base_name, quant, run_mode);
 
 % 组合完整路径
 param_full_path = fullfile(param_load_path, param_filename);
@@ -90,8 +94,9 @@ FFE_Taps = DRoF_PCM_Parameters.FFE_Taps;
 %% === 3. 加载VPI波形 (根据 run_mode 自动处理) ===
 % 从VPI导出的文件中加载接收信号
 % 构造VPI文件名
-% 格式: Data_PRBSxx_10Gsyms_10km_train_-xx.csv
-vpi_csv_filename = sprintf('Data_%s_%s%s_%d.csv', prbs_base_name, suduandlength, run_mode, received_optical_power);
+% 格式: Data_PRBS31_20Gsyms_20km_8bit_test_-15.csv
+vpi_csv_filename = sprintf('Data_%s_%s_%dbit_%s_%d.csv', prbs_base_name, suduandlength, quant, run_mode, received_optical_power);
+
 filename = fullfile(vpi_data_path, vpi_csv_filename);
 disp(['加载VPI波形: ', filename]);
 
@@ -124,7 +129,9 @@ Baudrate_pam = fs / sps;  % PAM信号的波特率 (例如: 64e9 / 4 = 16e9)
 
 % --- 步骤2: 自动重新构建发射端的完整前导序列（包括zeros和FFE ---
 % 动态构建同步头文件名 (例如: 'PRBS23_pam4.txt')
-sync_head_filename = sprintf('%s_pam4.txt', prbs_base_name);
+sync_head_name = sprintf('%s_pam4.txt', prbs_base_name);
+% 组合完整路径
+sync_head_filename = fullfile(data_dir, sync_head_name);
 fprintf('正在加载同步头文件: %s\n', sync_head_filename);
 
 synchead = load(sync_head_filename)';       % 自动加载 PAM4 同步头，加载128个符号的PAM4同步序列
@@ -233,8 +240,8 @@ end
 disp_str = sprintf('%s %s 总符号数: %d', prbs_base_name, run_mode, total_symbols);
 disp(disp_str);
 
-% 构造输出文件名 (例如: Data_For_NN_PRBS23_train_-18.mat)
-output_filename = sprintf('Data_For_NN_%s_%s_%d.mat', prbs_base_name, run_mode, received_optical_power);
+% 构造输出文件名 (例如: Data_For_NN_PRBS31_8bit_test_-15.mat)
+output_filename = sprintf('Data_For_NN_%s_%dbit_%s_%d.mat', prbs_base_name, quant, run_mode, received_optical_power);
 
 % 2. 检查保存目录是否存在，不存在则创建
 if ~exist(mat_save_path, 'dir')

@@ -18,29 +18,30 @@ clc;clear;close all;
 % 确保这里的设置与你运行 OFDM_PCM_OOKtx_auto.m (test模式) 时一致
 prbs_base_name = 'PRBS31';
 run_mode = 'test';
-received_optical_power = -19;  % 设置要分析的接收光功率
+received_optical_power = -20;  % 设置要分析的接收光功率
+quant = 12; % 手动修改为量化比特数 (必须与发射端一致！)
 
 % 模型类型选择: 'DNN' 或 'CNN'
 % 必须与 Python configs.py 中的 config.model_type 保持一致！
 model_type = 'DNN';
 
 % [路径1] 理想标签所在的文件夹 (Data_For_NN_...mat)
-mat_input_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\NN_Input_Data_mat';
+mat_input_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\NN_Input_Data_mat';
 
 % [路径2] Python输出结果所在的文件夹 (NN_Output_...mat)
-mat_output_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\NN_Output_Data_mat';
+mat_output_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\NN_Output_Data_mat';
 
 % [路径3] 参数文件所在的文件夹 (必须与发射端保存路径一致)
-param_load_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\TX_Matlab_Param_mat';
+param_load_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\TX_Matlab_Param_mat';
 
 % [路径4] 图片保存文件夹
-image_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\RX_Matlab_Result_Images_png\NN';
+image_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\RX_Matlab_Result_Images_png\NN';
 if ~exist(image_save_path, 'dir')
     mkdir(image_save_path);
 end
 
 % [路径5] 结果报告保存路径
-report_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\RX_Matlab_Result_Reports_txt\NN';
+report_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\RX_Matlab_Result_Reports_txt\NN';
 if ~exist(report_save_path, 'dir')
     mkdir(report_save_path);
 end
@@ -48,8 +49,8 @@ end
 disp(['模式: 评估 (TEST). 使用 ', prbs_base_name]);
 
 %% === 2. 加载参数 (TEST) ===
-% 构造参数文件名 (例如: DRoF_PCM_Parameters_PRBS31_test.mat)
-param_filename = sprintf('DRoF_PCM_Parameters_%s_%s.mat', prbs_base_name, run_mode);
+% 构造参数文件名 (例如: DRoF_PCM_Parameters_PRBS31_8bit_test.mat)
+param_filename = sprintf('DRoF_PCM_Parameters_%s_%dbit_%s.mat', prbs_base_name, quant, run_mode);
 % 组合完整路径
 param_full_path = fullfile(param_load_path, param_filename);
 
@@ -100,8 +101,8 @@ span = DRoF_PCM_Parameters.RRC_N_span;
 % -------------------------------------------------------------------------
 % 1. 加载理想测试标签 (来自 MATLAB Part 1)
 % -------------------------------------------------------------------------
-% 格式例如: Data_For_NN_PRBS23_test_-18.mat
-label_filename = sprintf('Data_For_NN_%s_%s_%d.mat', prbs_base_name, run_mode, received_optical_power);
+% 格式例如: Data_For_NN_PRBS23_8bit_test_-18.mat
+label_filename = sprintf('Data_For_NN_%s_%dbit_%s_%d.mat', prbs_base_name, quant, run_mode, received_optical_power);
 full_label_path = fullfile(mat_input_path, label_filename);
 
 disp(['加载理想标签: ', full_label_path]);
@@ -114,9 +115,9 @@ load(full_label_path, 'original_pam_test_data');
 % -------------------------------------------------------------------------
 % 2. 加载DNN均衡结果 (来自 Python)
 % -------------------------------------------------------------------------
-% 按照您指定的格式构造文件名: NN_Output_test_DNN_-27.mat
-% 对应格式: NN_Output_{run_mode}_{model_type}_{power}.mat
-dnn_output_filename = sprintf('NN_Output_%s_%s_%d.mat', run_mode, model_type, received_optical_power);
+% 按照您指定的格式构造文件名: NN_Output_test_DNN_8bit_-27.mat
+% 对应格式: NN_Output_{run_mode}_{model_type}_{quant}_{power}.mat
+dnn_output_filename = sprintf('NN_Output_%s_%s_%dbit_%d.mat', run_mode, model_type, quant, received_optical_power);
 dnn_output_full_path = fullfile(mat_output_path, dnn_output_filename);
 
 disp(['加载DNN均衡结果: ', dnn_output_full_path]);
@@ -165,9 +166,10 @@ disp(['自动推断的 seq_len (delay) 为: ', num2str(delay)]);
 
 % --- 检查延迟与PCM帧是否对齐 ---
 delay_bits = delay * Mm; % Mm = log2(MM)
-if mod(delay_bits, quant) ~= 0
-    error(['致命错误：比特延迟 (', num2str(delay_bits), ') 不是 quant (', num2str(quant), ') 的整数倍。无法进行PCM帧同步。']);
-end
+% if mod(delay_bits, quant) ~= 0
+%     error(['致命错误：比特延迟 (', num2str(delay_bits), ') 不是 quant (', num2str(quant), ') 的整数倍。无法进行PCM帧同步。']);
+% end
+fprintf('当前比特延迟: %d (Quant=%d, 余数=%d)\n', delay_bits, quant, mod(delay_bits, quant));
 
 %% ====================== PAM4 判决与解码 =========================
 

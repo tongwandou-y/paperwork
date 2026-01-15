@@ -11,7 +11,7 @@ base_root = r'D:\paperwork\Experiment_Data'
 
 # [核心变量]: 当前要处理的实验场景名称 (对应文件夹名，自动拼接到路径中)
 # 修改这里即可切换不同实验组，例如: '20Gsyms_30km', '5Gsyms_20km' 等
-target_scenario = '20Gsyms_30km'
+target_scenario = '20Gsyms_30km_10bit'
 
 # [参数范围]: X dBm 变化的范围
 # 根据示例数据推断，数组是从“低质量(-27)”到“高质量(-15)”排列的

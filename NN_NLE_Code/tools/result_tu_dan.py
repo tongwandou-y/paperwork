@@ -12,7 +12,7 @@ base_root = r'D:\paperwork\Experiment_Data'
 
 # [核心变量]: 当前要画图的实验场景
 # 修改这里，脚本会自动去读这个文件夹下的 .md 文件，并把图存在这里
-target_scenario = '20Gsyms_30km'
+target_scenario = '20Gsyms_30km_10bit'
 
 # [参数范围]: ROP (横坐标)
 rop = np.arange(-27, -14, 1)

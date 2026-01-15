@@ -19,29 +19,33 @@ clc;clear;close all;
 prbs_base_name = 'PRBS31';      % 目标评估序列: 'PRBS23' (用于测试集)
 run_mode       = 'test';        % 运行模式: 'test' (通常接收端主要运行test模式)
 model_type = 'DFE';             % 模型类型 (用于文件名生成)
-received_optical_power = -15;   % 设置接收光功率 (例如 -18)
-suduandlength = '20Gsyms_30km_';% 速率和距离标识 (注意包含下划线)
+received_optical_power = -20;   % 设置接收光功率 (例如 -18)
+suduandlength = '20Gsyms_30km'; % 速率和距离标识 (注意包含下划线)
+quant = 12;                      % 量化比特数
 
-vpi_data_path  = 'D:\paperwork\Experiment_Data\20Gsyms_30km\VPI_Output_Data_csv'; % VPI输出的.csv文件路径
+% PRBS 数据文件夹 (必须与发射端一致)
+data_dir = 'D:\paperwork\PRBS_Data';
+
+vpi_data_path  = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\VPI_Output_Data_csv'; % VPI输出的.csv文件路径
 
 % 参数文件所在的路径 (必须与发射端保存路径一致)
-param_load_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\TX_Matlab_Param_mat';
+param_load_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\TX_Matlab_Param_mat';
 
 % 图片保存文件夹
-image_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\RX_Matlab_Result_Images_png\DFE';
+image_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\RX_Matlab_Result_Images_png\DFE';
 if ~exist(image_save_path, 'dir')
     mkdir(image_save_path);
 end
 
 % 结果报告保存路径
-report_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km\RX_Matlab_Result_Reports_txt\DFE';
+report_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\RX_Matlab_Result_Reports_txt\DFE';
 if ~exist(report_save_path, 'dir')
     mkdir(report_save_path);
 end
 
 %% === 2. 加载系统参数 (Load Parameters) ===
-% 自动构建参数文件名(例如: DRoF_PCM_Parameters_PRBS23_test.mat)
-param_filename = sprintf('DRoF_PCM_Parameters_%s_%s.mat', prbs_base_name, run_mode);
+% 自动构建参数文件名(例如: DRoF_PCM_Parameters_PRBS23_8bit_test.mat)
+param_filename = sprintf('DRoF_PCM_Parameters_%s_%dbit_%s.mat', prbs_base_name, quant, run_mode);
 
 % 组合完整路径
 param_full_path = fullfile(param_load_path, param_filename);
@@ -97,8 +101,8 @@ FFE_Taps    = DRoF_PCM_Parameters.FFE_Taps;         % 发送端FFE抽头
 disp('参数加载完成。');
 
 %% === 3. 加载 VPI 接收波形 (Load VPI Waveform) ===
-% 构造 VPI 输出的 CSV 文件名 (例如: Data_PRBS31_10Gsyms_10km_test_-15.csv)
-vpi_csv_filename = sprintf('Data_%s_%s%s_%d.csv', prbs_base_name, suduandlength, run_mode, received_optical_power);
+% 构造 VPI 输出的 CSV 文件名 (例如: Data_PRBS31_20Gsyms_30km_12bit_test_-15.csv)
+vpi_csv_filename = sprintf('Data_%s_%s_%dbit_%s_%d.csv', prbs_base_name, suduandlength, quant, run_mode, received_optical_power);
 full_csv_path = fullfile(vpi_data_path, vpi_csv_filename);
 
 if ~exist(full_csv_path, 'file')
@@ -125,9 +129,10 @@ fprintf('正在执行帧同步与定时恢复...\n');
 
 % --- [4.1] 重建本地同步头 ---
 % 必须与发射端逻辑完全一致，用于计算互相关
-sync_head_filename = sprintf('%s_pam4.txt', prbs_base_name);
+sync_head_name = sprintf('%s_pam4.txt', prbs_base_name);
+sync_head_filename = fullfile(data_dir, sync_head_name);
 if ~exist(sync_head_filename, 'file')
-    warning('警告: 同步头文件 %s 未找到，请确保该文件在当前目录下。', sync_filename);
+    warning('警告: 同步头文件 %s 未找到，请确保该文件在当前目录下。', sync_head_filename);
 end
 synchead = load(sync_head_filename)';
 synchead_seq = [synchead synchead]; % 重复一次 (Tx逻辑)
@@ -236,7 +241,7 @@ train_prbs_name = 'PRBS23';
 train_mode_name = 'train';
 
 % 构造文件名 (统一使用 train_param_filename 变量名)
-train_param_filename = sprintf('DRoF_PCM_Parameters_%s_%s.mat', train_prbs_name, train_mode_name);
+train_param_filename = sprintf('DRoF_PCM_Parameters_%s_%dbit_%s.mat', train_prbs_name, quant, train_mode_name);
 
 % 组合完整路径 (使用前面定义的 param_load_path)
 train_param_full_path = fullfile(param_load_path, train_param_filename);
@@ -250,7 +255,7 @@ train_params_struct = load(train_param_full_path);
 train_PAM_code = train_params_struct.DRoF_PCM_Parameters.PAM_code;
 
 % --- [5.2] 加载训练集 VPI 波形 ---
-train_csv_file = sprintf('Data_%s_%s%s_%d.csv', train_prbs_name, suduandlength, train_mode_name, received_optical_power);
+train_csv_file = sprintf('Data_%s_%s_%dbit_%s_%d.csv', train_prbs_name, suduandlength, quant, train_mode_name, received_optical_power);
 train_full_path = fullfile(vpi_data_path, train_csv_file);
 
 if ~exist(train_full_path, 'file')
@@ -270,9 +275,11 @@ rx_train_raw = rx_train_raw / 2;
 
 % --- [5.3] 训练集同步 (Sync) ---
 % 必须加载 PRBS15 专用的同步头
-sync_head_train_file = sprintf('%s_pam4.txt', train_prbs_name);
+sync_head_train_name = sprintf('%s_pam4.txt', train_prbs_name);
+sync_head_train_file = fullfile(data_dir, sync_head_train_name);
+
 if ~exist(sync_head_train_file, 'file')
-    warning('缺少训练同步头文件: %s', sync_head_train_file);
+    error('错误: 缺少训练同步头文件 %s', sync_head_train_file);
 end
 synchead_train = load(sync_head_train_file)';
 synchead_train = [synchead_train synchead_train]; % 重复一次
