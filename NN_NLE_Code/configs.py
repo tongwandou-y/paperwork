@@ -21,7 +21,7 @@ def get_config(target_power=None):
     ## =========================================================
 
     # 光纤长度设置
-    config.fiber_length = '30km'
+    config.fiber_length = '20km'
 
     # 接收光功率 (dBm)
     # 如果传入了 target_power，就用传入的值；否则用默认值 (例如 -20)
@@ -48,11 +48,11 @@ def get_config(target_power=None):
 
     # 基础目录配置
     # 输入目录: 存放 MATLAB Part 1 生成的 .mat 标签和数据
-    input_dir = r'E:\yinshibo\paperwork\Experiment_Data\20Gsyms_30km\NN_Input_Data_mat'
+    input_dir = r'E:\yinshibo\paperwork\Experiment_Data\10Gsyms_20km\NN_Input_Data_mat'
     # 输出目录: 存放 Python 处理完供 MATLAB Part 2 使用的数据
-    output_dir = r'E:\yinshibo\paperwork\Experiment_Data\20Gsyms_30km\NN_Output_Data_mat'
+    output_dir = r'E:\yinshibo\paperwork\Experiment_Data\10Gsyms_20km\NN_Output_Data_mat'
     # Loss 日志存放目录
-    loss_log_dir = r'E:\yinshibo\paperwork\Experiment_Data\20Gsyms_30km\NN_Loss_Log_txt'
+    loss_log_dir = r'E:\yinshibo\paperwork\Experiment_Data\10Gsyms_20km\NN_Loss_Log_txt'
 
     # 自动创建不存在的目录
     if not os.path.exists(loss_log_dir):
@@ -61,21 +61,21 @@ def get_config(target_power=None):
     # --- 文件路径自动构造 ---
 
     # 1. 训练输入文件 (给 train.py 用)
-    # 格式示例: Data_For_NN_PRBS15_8bit_train_-18.mat
-    config.train_data_file = os.path.join(input_dir, f'Data_For_NN_{train_prbs}_{quant_bits}bit_train_{received_optical_power}.mat')
+    # 格式示例: Data_For_NN_PRBS15_train_-18.mat
+    config.train_data_file = os.path.join(input_dir, f'Data_For_NN_{train_prbs}_train_{received_optical_power}.mat')
 
     # 2. 测试输入文件 (给 run_equalization.py 用)
-    # 格式示例: Data_For_NN_PRBS23_8bit_test_-18.mat
-    config.test_data_file = os.path.join(input_dir, f'Data_For_NN_{test_prbs}_{quant_bits}bit_test_{received_optical_power}.mat')
+    # 格式示例: Data_For_NN_PRBS23_test_-18.mat
+    config.test_data_file = os.path.join(input_dir, f'Data_For_NN_{test_prbs}_test_{received_optical_power}.mat')
 
     # 3. 测试输出文件 (给 run_equalization.py 保存结果用)
-    # 格式示例: NN_Output_test_DNN_8bit_-18.mat 或 NN_Output_test_CNN_8bit_-18.mat
+    # 格式示例: NN_Output_test_DNN_-18.mat 或 NN_Output_test_CNN_-18.mat
     config.test_output_file = os.path.join(output_dir,
-                                           f'NN_Output_test_{config.model_type}_{quant_bits}bit_{received_optical_power}.mat')
+                                           f'NN_Output_test_{config.model_type}_{received_optical_power}.mat')
 
     # 4. 实验名称 (用于 Checkpoint 文件夹命名)
-    # 动态组合：光纤长度 + 模型类型 + Quant + 功率 (避免不同实验互相覆盖)
-    config.experiment_name = f'16QAM-{config.fiber_length}-{config.model_type}-{quant_bits}bit_{received_optical_power}dBm'
+    # 动态组合：光纤长度 + 模型类型 + 功率 (避免不同实验互相覆盖)
+    config.experiment_name = f'16QAM-{config.fiber_length}-{config.model_type}_{received_optical_power}dBm'
 
     # 5. Loss 日志文件完整路径
     # 格式示例: Loss_Log_16QAM-15km-CNN-8bit_-20dBm.txt
@@ -102,8 +102,8 @@ def get_config(target_power=None):
     #   - 例如: seq_len=9 -> 总窗口=19。这样中心抽头可以精确对应当前符号。
     #   - 对应 DNN 的输入维度 input_dim。
     #
-    # 【跑通删】重要限制条件:
-    # 【跑通删】  - mod(config.seq_len * Mm, quant) 必须满足帧同步对齐要求
+    # 重要限制条件:
+    #   - mod(config.seq_len * Mm, quant) 必须满足帧同步对齐要求
     # ---------------------------------------------------------
     config.seq_len = 8
 

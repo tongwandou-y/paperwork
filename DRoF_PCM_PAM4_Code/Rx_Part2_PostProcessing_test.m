@@ -19,38 +19,32 @@ clc;clear;close all;
 prbs_base_name = 'PRBS31';
 run_mode = 'test';
 received_optical_power = -20;  % 设置要分析的接收光功率
-quant = 12; % 手动修改为量化比特数 (必须与发射端一致！)
+quant = 8; % 手动修改为量化比特数 (必须与发射端一致！)
 
 % 模型类型选择: 'DNN' 或 'CNN'
 % 必须与 Python configs.py 中的 config.model_type 保持一致！
 model_type = 'DNN';
 
+root_base_dir = 'D:\paperwork\Experiment_Data\10Gsyms_20km';
+
 % [路径1] 理想标签所在的文件夹 (Data_For_NN_...mat)
-mat_input_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\NN_Input_Data_mat';
-
+mat_input_path = fullfile(root_base_dir, 'NN_Input_Data_mat');
 % [路径2] Python输出结果所在的文件夹 (NN_Output_...mat)
-mat_output_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\NN_Output_Data_mat';
-
+mat_output_path = fullfile(root_base_dir, 'NN_Output_Data_mat');
 % [路径3] 参数文件所在的文件夹 (必须与发射端保存路径一致)
-param_load_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\TX_Matlab_Param_mat';
-
+param_load_path = fullfile(root_base_dir, 'TX_Matlab_Param_mat');
 % [路径4] 图片保存文件夹
-image_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\RX_Matlab_Result_Images_png\NN';
-if ~exist(image_save_path, 'dir')
-    mkdir(image_save_path);
-end
-
+image_save_path = fullfile(root_base_dir, 'RX_Matlab_Result_Images_png', 'NN');
+if ~exist(image_save_path, 'dir'), mkdir(image_save_path); end
 % [路径5] 结果报告保存路径
-report_save_path = 'D:\paperwork\Experiment_Data\20Gsyms_30km_12bit\RX_Matlab_Result_Reports_txt\NN';
-if ~exist(report_save_path, 'dir')
-    mkdir(report_save_path);
-end
+report_save_path = fullfile(root_base_dir, 'RX_Matlab_Result_Reports_txt', 'NN');
+if ~exist(report_save_path, 'dir'), mkdir(report_save_path); end
 
 disp(['模式: 评估 (TEST). 使用 ', prbs_base_name]);
 
 %% === 2. 加载参数 (TEST) ===
-% 构造参数文件名 (例如: DRoF_PCM_Parameters_PRBS31_8bit_test.mat)
-param_filename = sprintf('DRoF_PCM_Parameters_%s_%dbit_%s.mat', prbs_base_name, quant, run_mode);
+% 构造参数文件名 (例如: DRoF_PCM_Parameters_PRBS31_test.mat)
+param_filename = sprintf('DRoF_PCM_Parameters_%s_%s.mat', prbs_base_name, run_mode);
 % 组合完整路径
 param_full_path = fullfile(param_load_path, param_filename);
 
@@ -101,8 +95,8 @@ span = DRoF_PCM_Parameters.RRC_N_span;
 % -------------------------------------------------------------------------
 % 1. 加载理想测试标签 (来自 MATLAB Part 1)
 % -------------------------------------------------------------------------
-% 格式例如: Data_For_NN_PRBS23_8bit_test_-18.mat
-label_filename = sprintf('Data_For_NN_%s_%dbit_%s_%d.mat', prbs_base_name, quant, run_mode, received_optical_power);
+% 格式例如: Data_For_NN_PRBS23_test_-18.mat
+label_filename = sprintf('Data_For_NN_%s_%s_%d.mat', prbs_base_name, run_mode, received_optical_power);
 full_label_path = fullfile(mat_input_path, label_filename);
 
 disp(['加载理想标签: ', full_label_path]);
@@ -115,9 +109,9 @@ load(full_label_path, 'original_pam_test_data');
 % -------------------------------------------------------------------------
 % 2. 加载DNN均衡结果 (来自 Python)
 % -------------------------------------------------------------------------
-% 按照您指定的格式构造文件名: NN_Output_test_DNN_8bit_-27.mat
-% 对应格式: NN_Output_{run_mode}_{model_type}_{quant}_{power}.mat
-dnn_output_filename = sprintf('NN_Output_%s_%s_%dbit_%d.mat', run_mode, model_type, quant, received_optical_power);
+% 按照您指定的格式构造文件名: NN_Output_test_DNN_-27.mat
+% 对应格式: NN_Output_{run_mode}_{model_type}_{power}.mat
+dnn_output_filename = sprintf('NN_Output_%s_%s_%d.mat', run_mode, model_type, received_optical_power);
 dnn_output_full_path = fullfile(mat_output_path, dnn_output_filename);
 
 disp(['加载DNN均衡结果: ', dnn_output_full_path]);
@@ -128,21 +122,80 @@ disp(['加载DNN均衡结果: ', dnn_output_filename]);
 load(dnn_output_full_path); % 加载一个名为 received_eq 的变量
 
 %% ==================== 信号格式化及参数自动推断 ======================
+% % 确保数据是行向量
+% if size(received_eq, 1) > 1
+%     received_eq = received_eq.';
+% end
+% 
+% disp('正在绘制 NN 均衡后眼图...');
+% 
+% % 显示均衡后的眼图
+% % h_eye = eyediagram(received_eq(1, 1:min(2000, length(received_eq))), 2*sps/Mm); % PAM4眼图符号宽度是OOK两倍
+% h_eye = eyediagram(received_eq(1, 1:min(2000, length(received_eq))), 2); % PAM4眼图符号宽度是OOK两倍
+
+%% ==================== 信号格式化及参数自动推断（二） ======================
 % 确保数据是行向量
 if size(received_eq, 1) > 1
     received_eq = received_eq.';
 end
 
-% 显示均衡后的眼图
-eyediagram(received_eq(1, 1:min(2000, length(received_eq))), 2*sps/Mm); % PAM4眼图符号宽度是OOK两倍
-% 动态生成眼图的标题
-dynamic_title = sprintf('Eye Diagram after DNN (PAM4 - %s TEST %d dBm)', prbs_base_name, received_optical_power);
-title(dynamic_title);
+% -------------------------------------------------------------------------
+% [核心修改] 重建平滑眼图 (Reconstruct Smooth Eye Diagram)
+% 原理：NN输出是1 SPS的离散点。为了看清眼图的张开和过渡轨迹，
+% 我们需要进行上采样(Upsampling)和成型滤波(Pulse Shaping)。
+% 优化策略：仅截取前 N 个符号进行插值和绘图，避免卡死
+% -------------------------------------------------------------------------
+disp('正在重建并绘制 NN 平滑眼图...');
+
+% 1. 设置插值参数
+upsample_factor = 16;  % 上采样倍数 (越高越平滑，16通常足够模拟模拟波形)
+filter_span = 6;       % 滤波器跨度 (符号数)
+% 使用脚本前面加载的 Rolloff 参数，如果没有加载则默认 0.2
+% if exist('Rolloff', 'var')
+%     beta_val = Rolloff;
+% else
+beta_val = 0.5; 
+% end
+
+% 2. 设计成型滤波器 (根升余弦 RRC)
+% 这模拟了信号在DAC之后的模拟形态
+rrcFilter = rcosdesign(beta_val, filter_span, upsample_factor);
+
+% 3. 【关键优化】截取部分数据进行绘图 (第10000到15000)
+idx_start = 10000;
+idx_end   = 20000;
+% 截取该区间的信号
+sig_subset = received_eq(idx_start : idx_end);
+
+% 4. 对截取的数据进行上采样
+sig_upsampled = upsample(sig_subset, upsample_factor);
+% 5. 卷积滤波 (填补零值，形成平滑曲线)
+% 注意：这只是为了画图好看，不影响 BER 计算！BER 计算依然使用原始的 received_eq
+sig_smooth = conv(sig_upsampled, rrcFilter, 'same');
+
+% 5. 处理滤波带来的幅度衰减和群延迟
+% 简单的归一化以匹配 [-1, 1] 范围，方便画参考线
+sig_smooth = sig_smooth / max(abs(sig_smooth)); 
+
+% 6. 绘制眼图
+% 注意：这里输入的是 sig_smooth (插值后的短数据)
+% 这里的 '2 * upsample_factor' 意思是：每条轨迹显示 2 个符号周期。
+% 因为现在每个符号包含了 upsample_factor 个采样点。
+h_eye = eyediagram(sig_smooth, 2 * upsample_factor);
+
+
+% ==================================================================
+
 
 % ---------------- 自动保存眼图 ----------------
+% 动态生成眼图的标题
+dynamic_title = sprintf('Eye Diagram after DNN (PAM4 - %s TEST %d dBm)', prbs_base_name, received_optical_power);
+% title(dynamic_title);
+set(h_eye, 'Name', dynamic_title); % 设置窗口名称
+
 h_eye = gcf; % 获取当前图形句柄 (Get Current Figure)
 
-% 构造文件名: Eye_PRBS31_test_CNN_-15dBm.png
+% 构造文件名: Eye_PRBS31_test_DNN_-15dBm.png
 eye_filename = sprintf('Eye_%s_%s_%s_%ddBm.png', ...
     prbs_base_name, run_mode, model_type, received_optical_power);
 
@@ -151,11 +204,11 @@ full_eye_path = fullfile(image_save_path, eye_filename);
 % 保存为高清 PNG
 saveas(h_eye, full_eye_path);
 fprintf('眼图已保存: %s\n', eye_filename);
-% ----------------------------------------------------
 
 % --- 自动推断 seq_len (delay) ---
-total_sym_tx = length(original_pam_test_data); % 发射的总PAM符号数
-total_sym_rx = length(received_eq);            % 接收的均衡后PAM符号数
+% 【注意】计算 delay 必须使用原始的全量 received_eq，不能用截取后的 sig_subset！
+total_sym_tx = length(original_pam_test_data); 
+total_sym_rx = length(received_eq);            
 lost_sym = total_sym_tx - total_sym_rx;
 
 if lost_sym < 0 || mod(lost_sym, 2) ~= 0
@@ -166,10 +219,9 @@ disp(['自动推断的 seq_len (delay) 为: ', num2str(delay)]);
 
 % --- 检查延迟与PCM帧是否对齐 ---
 delay_bits = delay * Mm; % Mm = log2(MM)
-% if mod(delay_bits, quant) ~= 0
-%     error(['致命错误：比特延迟 (', num2str(delay_bits), ') 不是 quant (', num2str(quant), ') 的整数倍。无法进行PCM帧同步。']);
-% end
-fprintf('当前比特延迟: %d (Quant=%d, 余数=%d)\n', delay_bits, quant, mod(delay_bits, quant));
+if mod(delay_bits, quant) ~= 0
+    error(['致命错误：比特延迟 (', num2str(delay_bits), ') 不是 quant (', num2str(quant), ') 的整数倍。无法进行PCM帧同步。']);
+end
 
 %% ====================== PAM4 判决与解码 =========================
 
@@ -226,6 +278,36 @@ disp(['对齐后用于处理的符号长度: ', num2str(length(ref_data_aligned)
 [SERnum,SERratio] = symerr(ref_data_aligned, PAM_re_gray_symbols_aligned);
 % disp('--- PAM4 SER ---');
 % disp(sprintf('SERratio =       %g', SERratio));
+
+
+
+% =========================================================================
+% PAM Link BER 计算
+% =========================================================================
+% 原理：利用已经对齐的符号流 (ref_data_aligned 和 PAM_re_gray_symbols_aligned)
+% 将它们分别通过 gray2bin 和 de2bi 还原成比特流，直接计算物理链路的 BER。
+
+% 1. 将对齐后的【理想发送符号】转回比特
+% ref_data_aligned 是 0,1,2,3 的电平值 (遵循格雷码)
+Tx_Dec_Aligned = gray2bin(ref_data_aligned, 'pam', MM);  % 格雷逆映射 -> 十进制
+Tx_Bits_Mat = de2bi(Tx_Dec_Aligned, Mm, 'left-msb');     % 十进制 -> 二进制矩阵
+Tx_Bits_Link = reshape(Tx_Bits_Mat', [], 1);             % 拉直成比特流
+
+% 2. 将对齐后的【实际接收符号】转回比特
+Rx_Dec_Aligned = gray2bin(PAM_re_gray_symbols_aligned', 'pam', MM); % 注意转置，确保是列向量
+Rx_Bits_Mat = de2bi(Rx_Dec_Aligned, Mm, 'left-msb');
+Rx_Bits_Link = reshape(Rx_Bits_Mat', [], 1);
+
+% 3. 计算 PAM 链路层的 BER
+[BER_PAM_Num, BER_PAM_Ratio] = biterr(Tx_Bits_Link, Rx_Bits_Link);
+
+fprintf('>>> PAM Link BER: %.4e (Errors: %d/%d)\n', ...
+    BER_PAM_Ratio, BER_PAM_Num, length(Tx_Bits_Link));
+% =========================================================================
+
+
+
+
 
 % --- 格雷码解码 (逆向映射) ---
 % de_PAM1_gray 是恢复的格雷码符号序列 [0, 1, 3, 2, ...]
@@ -432,15 +514,28 @@ report_lines = {};
 report_lines{end+1} = '========================================';
 report_lines{end+1} = '        FINAL PERFORMANCE REPORT        ';
 report_lines{end+1} = '========================================';
-report_lines{end+1} = sprintf('Data Source   : %s (%s) %d dBm', prbs_base_name, run_mode, received_optical_power);
-report_lines{end+1} = sprintf('Model Type    : %s', model_type); % 把模型类型也记下来
-report_lines{end+1} = sprintf('SER (PAM4)    : %.4e', SERratio); % 加上 SER 指标
-report_lines{end+1} = sprintf('PCM SQNR      : %.4f dB', PCM_SQNR);
-report_lines{end+1} = sprintf('rms EVM       : %.4f %%', rmsEVM);
-report_lines{end+1} = sprintf('BER (16-QAM)  : %.4e', BERratio);
-report_lines{end+1} = sprintf('Total Errors  : %d / %d bits', BERnum, length(Txdata));
+report_lines{end+1} = sprintf('Data Source   	: %s (%s) %d dBm', prbs_base_name, run_mode, received_optical_power);
+report_lines{end+1} = sprintf('Model Type    	: %s', model_type);
+
+% --- 物理链路层指标 (PAM4) ---
+report_lines{end+1} = '----------------------------------------';
+report_lines{end+1} = sprintf('SER (PAM4)    	: %.4e', SERratio);       % 符号误码率
+report_lines{end+1} = sprintf('BER (PAM4)       : %.4e', BER_PAM_Ratio); % 链路比特误码率
+report_lines{end+1} = sprintf('PAM4 Total Errors: %d / %d bits', BER_PAM_Num, length(Tx_Bits_Link)); % 具体的错误个数 (你刚才加的这行)
+
+% --- 中间层指标 (PCM & OFDM) ---
+report_lines{end+1} = '----------------------------------------';
+report_lines{end+1} = sprintf('PCM SQNR      	: %.4f dB', PCM_SQNR);
+report_lines{end+1} = sprintf('rms EVM       	: %.4f %%', rmsEVM);
+
+% --- 应用层指标 (16-QAM) ---
+report_lines{end+1} = '----------------------------------------';
+report_lines{end+1} = sprintf('BER (16-QAM) 	: %.4e', BERratio);
+report_lines{end+1} = sprintf('Total Errors  	: %d / %d bits', BERnum, length(Txdata));
+
 report_lines{end+1} = '========================================';
-report_lines{end+1} = sprintf('Date          : %s', datestr(now)); % 加上时间戳
+report_lines{end+1} = sprintf('Date          	: %s', datestr(now));
+
 
 % 4. 执行输出
 for i = 1:length(report_lines)
