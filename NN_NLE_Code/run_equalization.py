@@ -15,16 +15,14 @@ from models.model.CNN import CNN
 from util.utils import load_checkpoint  # 导入加载检查点的函数
 
 
-def create_sliding_window_for_test(signal, taps):
+def create_block_window_for_test(signal, taps, block_size):
     """
-    将一维时序信号转换为适用于DNN的滑动窗口数据集。
-    这个函数必须与 util.load_data_mat.py 中的逻辑保持一致，
-    以确保测试数据和训练数据经过了相同的处理。
-
-
+    块级对齐的测试特征构建:
+    - 以物理块为步长生成窗口
     输入:
         signal: 失真的信号序列 (numpy array)
         taps:   窗口大小 (均衡器抽头数)
+        block_size: 物理块大小 G
     输出:
         X: 特征矩阵 (样本数, taps)
     """
@@ -35,10 +33,16 @@ def create_sliding_window_for_test(signal, taps):
         print(f"警告：信号长度 ({len(signal)}) 小于抽头数 ({taps})，无法创建数据集。")
         return np.array(X)
 
-    # 遍历信号，创建窗口
-    # 我们为 (len(signal) - taps + 1) 个窗口生成特征
-    for i in range(len(signal) - taps + 1):
-        window = signal[i: i + taps]
+    seq_len = taps // 2
+    num_blocks = len(signal) // block_size
+    for b in range(num_blocks):
+        # 与训练一致：以物理块起点(MSB)作为对齐中心
+        center = b * block_size
+        start = center - seq_len
+        end = center + seq_len + 1
+        if start < 0 or end > len(signal):
+            continue
+        window = signal[start:end]
         X.append(window)
 
     return np.array(X)
@@ -112,9 +116,18 @@ def run_equalization(configs):
         print(f"错误: 在 '{mat_file_path}' 中未找到 'dnn_test_input'。")
         return
 
-    print(f"为测试数据创建滑动窗口 (Taps: {taps})...")
-    # 使用辅助函数创建滑动窗口特征
-    test_features = create_sliding_window_for_test(distorted_signal, taps)
+    # ====================== Z-score 归一化 ======================
+    # 【关键修改】训练时在 MatDatasetBlock 中对输入做了 Z-score 标准化，
+    # 测试时必须做同样的处理，否则数据分布不一致，模型输出无意义。
+    feat_mean = np.mean(distorted_signal)
+    feat_std = np.std(distorted_signal)
+    distorted_signal = (distorted_signal - feat_mean) / (feat_std + 1e-8)
+    print(f"已对测试数据进行 Z-score 归一化 (mean={feat_mean:.4f}, std={feat_std:.4f})")
+
+    # 物理块大小 G = quant / Mm (PAM4 -> Mm=2)
+    block_size = configs.quant // 2
+    print(f"为测试数据创建块级窗口 (Taps: {taps}, G: {block_size})...")
+    test_features = create_block_window_for_test(distorted_signal, taps, block_size)
 
     if test_features.shape[0] == 0:
         print("错误：未能创建测试特征。")
@@ -135,18 +148,34 @@ def run_equalization(configs):
         equalized_output = model(test_features_tensor)
 
     # 将结果移回CPU并转换为numpy数组
-    equalized_output_np = equalized_output.cpu().numpy().flatten()
+    pam_out, pcm_out = equalized_output
+    pam_out_np = pam_out.cpu().numpy()
+    pcm_out_np = pcm_out.cpu().numpy().flatten()
+
+    # PAM 输出展平为符号序列
+    pam_out_seq = pam_out_np.reshape(-1)
+
+    # ====================== Clamp PAM 输出 ======================
+    # Head-A 已移除 Tanh，输出可能超出 [-1, 1]
+    # MATLAB Rx_Part2 期望接收 [-1, 1] 范围的信号进行门限判决
+    pam_out_seq = np.clip(pam_out_seq, -1.0, 1.0)
+    print(f"PAM 输出已 clamp 到 [-1, 1] 范围 (实际范围: [{pam_out_np.min():.4f}, {pam_out_np.max():.4f}])")
 
     # --- 5. 保存结果到 .mat 文件 ---
     # MATLAB Rx_Part2_PostProcessing.m 期望一个名为 'received_eq' 的变量
-    output_data = {'received_eq': equalized_output_np}
+    output_data = {
+        'received_eq': pam_out_seq,
+        'pcm_eq': pcm_out_np
+    }
 
     spio.savemat(output_file, output_data)
 
     print(f"--- 均衡完成 ---")
     print(f"均衡后的信号 (变量 'received_eq') 结果已保存到: {output_file}")
+    print(f"PCM 回归输出 (变量 'pcm_eq') 结果已保存到: {output_file}")
     print(f"原始测试信号长度: {len(distorted_signal)} 符号")
-    print(f"均衡后信号长度: {len(equalized_output_np)} 符号 (因滑动窗口效应，长度减少了 {taps - 1} 个符号)")
+    print(f"均衡后 PAM 符号长度: {len(pam_out_seq)} (块级输出)")
+    print(f"均衡后 PCM 采样长度: {len(pcm_out_np)}")
 
 
 if __name__ == '__main__':

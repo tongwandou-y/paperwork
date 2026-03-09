@@ -4,7 +4,7 @@ import os
 
 # 1. 指定你的项目文件夹路径 (输入路径)
 #    请修改为你 DROF 项目的实际路径
-PROJECT_PATH = r"D:\paperwork\Experiment_Code\DRoF_PCM_PAM4_Code"
+PROJECT_PATH = r"D:\paperwork\Experiment_Code\DRoF_PCM_PAM4_Code_PCDNN"
 
 # 2. 指定输出位置
 #    填文件夹路径会自动生成 "DROF代码汇总.md"，也可以指定具体文件名

@@ -51,6 +51,39 @@ def create_sliding_window_dataset(signal, labels, taps):
     num_samples = len(Y)
     return np.array(X[:num_samples]), np.array(Y).reshape(-1, 1)    # reshape(-1, 1)确保标签是一个列向量
 
+"""
+块级对齐数据集构建函数
+"""
+def create_block_window_dataset(signal, pam_labels, pcm_labels, taps, block_size):
+    """
+    块级对齐的数据集构建：
+    - 输入窗口按 PAM 符号序列滑动，但以物理块为步长
+    - 每个物理块输出 G 个 PAM 标签 + 1 个 PCM 电压标签
+    """
+    X, Y_pam, Y_pcm = [], [], []
+    seq_len = taps // 2
+
+    if len(signal) < taps:
+        print(f"警告：信号长度 ({len(signal)}) 小于抽头数 ({taps})，无法创建数据集。")
+        return np.array(X), np.array(Y_pam), np.array(Y_pcm)
+
+    num_blocks = min(len(pam_labels) // block_size, len(pcm_labels))
+
+    for b in range(num_blocks):
+        # 以物理块起点(MSB)作为对齐中心
+        center = b * block_size
+        start = center - seq_len
+        end = center + seq_len + 1
+        if start < 0 or end > len(signal):
+            continue
+
+        window = signal[start:end]
+        X.append(window)
+        Y_pam.append(pam_labels[b * block_size:(b + 1) * block_size])
+        Y_pcm.append(pcm_labels[b])
+
+    return np.array(X), np.array(Y_pam), np.array(Y_pcm).reshape(-1, 1)
+
 
 """
 代码段解释
@@ -136,3 +169,61 @@ class MatDataset(Dataset):
         # 我们返回三次是为了匹配 train.py 中 for 循环的格式 (a, c, after)
         # 对于这个DNN，'c'部分的数据没有用到，可以直接返回特征
         return self.features[index], self.features[index], self.labels[index]
+
+"""
+训练：读取 dnn_train_input / dnn_train_label / dnn_train_pcm_ref
+测试：读取 dnn_test_input / dnn_test_pcm_ref
+自动推断 G = len(pam_labels) / len(pcm_labels)
+以块为步长构建样本，输出 (features, pam_labels_block, pcm_label)
+"""
+class MatDatasetBlock(Dataset):
+    """
+    块级对齐数据集：每个样本输出 G 个 PAM 标签和 1 个 PCM 电压标签。
+    """
+    def __init__(self, mat_file_path, seq_len, is_train=True):
+        self.seq_len = seq_len
+        self.is_train = is_train
+        taps = 2 * self.seq_len + 1
+
+        print(f"正在从 '{mat_file_path}' 加载数据...")
+        mat_contents = spio.loadmat(mat_file_path)
+
+        if self.is_train:
+            distorted_signal = mat_contents['dnn_train_input'].flatten()
+            pam_labels = mat_contents['dnn_train_label'].flatten()
+            pcm_labels = mat_contents['dnn_train_pcm_ref'].flatten()
+            print("加载训练数据(块级对齐)...")
+        else:
+            distorted_signal = mat_contents['dnn_test_input'].flatten()
+            pam_labels = np.zeros(1, dtype=np.float32)
+            pcm_labels = mat_contents.get('dnn_test_pcm_ref', np.zeros(1, dtype=np.float32)).flatten()
+            print("加载测试数据(块级对齐)...")
+
+        # Z-score 标准化输入，避免幅度压缩导致梯度消失
+        feat_mean = np.mean(distorted_signal)
+        feat_std = np.std(distorted_signal)
+        distorted_signal = (distorted_signal - feat_mean) / (feat_std + 1e-8)
+
+        if len(pcm_labels) == 0:
+            raise ValueError("PCM 标签为空，无法构造块级数据集。")
+
+        block_size = len(pam_labels) // len(pcm_labels) if len(pam_labels) > 1 else 1
+        if len(pam_labels) > 1 and len(pam_labels) % len(pcm_labels) != 0:
+            raise ValueError("PAM 标签长度与 PCM 标签长度不整除，无法确定 G。")
+
+        print(f"创建块级滑动窗口... (窗口总长度: {taps}, G: {block_size})")
+        features, labels_pam, labels_pcm = create_block_window_dataset(
+            distorted_signal, pam_labels, pcm_labels, taps, block_size
+        )
+
+        self.features = torch.from_numpy(features.astype(np.float32))
+        self.labels_pam = torch.from_numpy(labels_pam.astype(np.float32))
+        self.labels_pcm = torch.from_numpy(labels_pcm.astype(np.float32))
+
+        print(f"数据准备完毕。特征尺寸: {self.features.shape}, PAM标签尺寸: {self.labels_pam.shape}, PCM标签尺寸: {self.labels_pcm.shape}")
+
+    def __len__(self):
+        return len(self.features)
+
+    def __getitem__(self, index):
+        return self.features[index], self.labels_pam[index], self.labels_pcm[index]
