@@ -24,8 +24,8 @@ quant = 8; % 手动修改为量化比特数 (必须与发射端一致！)
 % 模型类型选择: 'DNN' 或 'CNN' 或 `P-CDNN`,必须与 Python configs.py 中的 config.model_type 保持一致！
 model_type = 'DNN';
 
-% 消融实验组别选择: 'ablation_pam_only', 'ablation_pam_pcm', 'ablation_full_pcdnn',(必须与 Python config.py 中的 ablation_tag 保持一致)
-ablation_tag = 'ablation_full_pcdnn';
+% 消融实验组别选择: 'ablation_pam_only', 'ablation_pam_pcm' (必须与 Python config.py 中的 ablation_tag 保持一致)
+ablation_tag = 'ablation_pam_pcm';
 
 root_base_dir = 'D:\paperwork\Experiment_Data\20Gsyms_20km';
 

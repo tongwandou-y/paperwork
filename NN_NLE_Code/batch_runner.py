@@ -24,20 +24,12 @@ def main():
         {
             'name': 'pam_only',
             'use_loss_pam': True,
-            'use_loss_pcm': False,
-            'use_loss_cons': False
+            'use_loss_pcm': False
         },
         {
             'name': 'pam_pcm',
             'use_loss_pam': True,
-            'use_loss_pcm': True,
-            'use_loss_cons': False
-        },
-        {
-            'name': 'full_pcdnn',
-            'use_loss_pam': True,
-            'use_loss_pcm': True,
-            'use_loss_cons': True
+            'use_loss_pcm': True
         }
     ]
     # ===========================================

@@ -73,10 +73,17 @@ def train(configs):
     if not use_auto_uncertainty:
         raise ValueError("当前版本仅支持 loss_weight_strategy='auto_uncertainty'")
     uncertainty_reg = float(getattr(configs, 'auto_uncertainty_reg', 0.05))
+    use_loss_ema_normalization = bool(getattr(configs, 'use_loss_ema_normalization', True))
+    loss_ema_momentum = float(getattr(configs, 'loss_ema_momentum', 0.98))
+    loss_norm_eps = float(getattr(configs, 'loss_norm_eps', 1e-8))
+    pam_priority_factor = float(getattr(configs, 'pam_priority_factor', 1.20))
+    aux_to_pam_max_ratio = float(getattr(configs, 'aux_to_pam_max_ratio', 0.80))
 
-    # 可学习的log-variance参数（对应 L_pam / L_pcm / L_cons）
+    # 可学习的log-variance参数（对应 L_pam / L_pcm）
     # 初始化为0 -> 初始权重约为1
-    loss_log_vars = nn.Parameter(torch.zeros(3, device=device))
+    loss_log_vars = nn.Parameter(torch.zeros(2, device=device))
+    # 用于loss尺度归一化的EMA状态，避免不同任务量纲差异导致权重抖动
+    loss_ema_state = torch.ones(2, device=device)
     optimizer = torch.optim.Adam(
         list(model.parameters()) + [loss_log_vars],
         lr=configs.learn_rate
@@ -110,7 +117,9 @@ def train(configs):
             scheduler.load_state_dict(ckpt['scheduler'])
         if 'loss_log_vars' in ckpt:
             with torch.no_grad():
-                loss_log_vars.copy_(ckpt['loss_log_vars'].to(device))
+                ckpt_log_vars = ckpt['loss_log_vars'].to(device).flatten()
+                n_copy = min(loss_log_vars.numel(), ckpt_log_vars.numel())
+                loss_log_vars[:n_copy].copy_(ckpt_log_vars[:n_copy])
         print(f"从 {ckpt_path} 恢复训练...")
 
         if start_ep == 0 or not os.path.exists(log_file_path):
@@ -133,62 +142,15 @@ def train(configs):
     print(f"\n开始训练，共 {configs.epoch} 轮...")
     model.train()
 
-    # Soft-DAC 温度退火参数（可配置）
-    alpha_start = float(getattr(configs, 'soft_dac_alpha_start', 3.0))
-    alpha_end = float(getattr(configs, 'soft_dac_alpha_end', 12.0))
-    alpha_step = (alpha_end - alpha_start) / max(configs.epoch - 1, 1)
-    cons_target = getattr(configs, 'consistency_target', 'pcm_head')
-    cons_ramp_ratio = float(getattr(configs, 'consistency_ramp_ratio', 0.35))
-    cons_ramp_epochs = max(1, int(configs.epoch * cons_ramp_ratio))
-
-    # 物理参数
-    K = 2 ** configs.quant
-    pam_levels = torch.tensor([-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0], device=device).view(1, 1, 4)
-
-    def soft_dac_reconstruct(pam_out, alpha):
-        """
-        pam_out: [B, G]  (Head-A的输出，已clamp到[-1.2, 1.2])
-        返回: [B, 1] 的连续电压估计 (归一化到[-1, 1])
-        """
-        # 先 clamp 确保不会太远离 PAM 电平
-        pam_clamped = pam_out.clamp(-1.2, 1.2)
-
-        # [B, G, 1] 与 [1,1,4] 广播 -> [B, G, 4]
-        dist2 = (pam_clamped.unsqueeze(-1) - pam_levels) ** 2
-        probs = torch.softmax(-alpha * dist2, dim=-1)
-
-        # Gray 码顺序: 00, 01, 11, 10 (对应 pam_levels 顺序)
-        p00 = probs[:, :, 0]
-        p01 = probs[:, :, 1]
-        p11 = probs[:, :, 2]
-        p10 = probs[:, :, 3]
-
-        b1 = p11 + p10
-        b0 = p01 + p11
-
-        # [B, G*2] 按 MSB -> LSB 拼接
-        bits = torch.stack([b1, b0], dim=-1).reshape(pam_out.size(0), -1)
-
-        # 软码字期望
-        weights = torch.arange(bits.size(1) - 1, -1, -1, device=device, dtype=bits.dtype)
-        weights = (2 ** weights).view(1, -1)
-        q_hat = torch.sum(bits * weights, dim=1, keepdim=True)
-
-        # 线性映射到 [-1, 1]
-        v_hat = 2.0 * (q_hat / (K - 1)) - 1.0
-        return v_hat
-
     for ep in range(start_ep, configs.epoch):
         epoch_loss_sum = 0.0
         epoch_loss_pam = 0.0
         epoch_loss_pcm = 0.0
-        epoch_loss_cons = 0.0
-        alpha = alpha_start + alpha_step * ep
+        avg_loss_cons = 0.0
 
         # 损失项开关
         use_pam = configs.use_loss_pam
         use_pcm = configs.use_loss_pcm
-        use_cons = configs.use_loss_cons
 
         for i, (features, pam_labels, pcm_labels) in enumerate(train_loader):
             features = features.to(device)
@@ -202,38 +164,63 @@ def train(configs):
             loss = torch.tensor(0.0, device=device)
             loss_pam = None
             loss_pcm = None
-            loss_cons = None
             if use_pam:
                 loss_pam = criterion(pam_out, pam_labels)
                 epoch_loss_pam += loss_pam.item()
             if use_pcm:
                 loss_pcm = criterion(pcm_out, pcm_labels)
                 epoch_loss_pcm += loss_pcm.item()
-            if use_cons:
-                # 一致性损失：默认约束 Head-A 与 Head-B 的物理一致性，减少对PAM主任务的硬拉扯
-                v_reconstruct = soft_dac_reconstruct(pam_out, alpha)
-                if cons_target == 'pcm_label':
-                    cons_ref = pcm_labels
-                else:
-                    cons_ref = pcm_out
-                loss_cons = criterion(v_reconstruct, cons_ref)
-                epoch_loss_cons += loss_cons.item()
 
-            # 组合总损失（Kendall & Gal 风格多任务不确定性加权）
-            #   L = sum(exp(-s_i) * L_i + lambda * s_i)
-            # 其中 s_i 为可学习log-variance，lambda控制正则强度
-            if use_pam and (loss_pam is not None):
-                loss = loss + torch.exp(-loss_log_vars[0]) * loss_pam + uncertainty_reg * loss_log_vars[0]
-            if use_pcm and (loss_pcm is not None):
-                loss = loss + configs.loss_alpha * (
-                    torch.exp(-loss_log_vars[1]) * loss_pcm + uncertainty_reg * loss_log_vars[1]
+            # 组合总损失（自适应多任务 + 主任务保护）
+            # 1) 可选EMA归一化：消除不同loss量纲差异
+            # 2) 不确定性加权：自动学习各任务相对权重
+            # 3) PAM优先与辅助限幅：保证SER/BER目标不被辅助任务拖累
+            def normalize_loss_with_ema(raw_loss, idx):
+                if (raw_loss is None) or (not use_loss_ema_normalization):
+                    return raw_loss
+                with torch.no_grad():
+                    loss_ema_state[idx] = (
+                        loss_ema_momentum * loss_ema_state[idx]
+                        + (1.0 - loss_ema_momentum) * raw_loss.detach()
+                    )
+                denom = torch.clamp(loss_ema_state[idx].detach(), min=loss_norm_eps)
+                return raw_loss / denom
+
+            norm_loss_pam = normalize_loss_with_ema(loss_pam, 0)
+            norm_loss_pcm = normalize_loss_with_ema(loss_pcm, 1)
+
+            pam_term = None
+            pcm_term = None
+
+            if use_pam and (norm_loss_pam is not None):
+                pam_term = torch.exp(-loss_log_vars[0]) * norm_loss_pam + uncertainty_reg * loss_log_vars[0]
+            if use_pcm and (norm_loss_pcm is not None):
+                pcm_term = configs.loss_alpha * (
+                    torch.exp(-loss_log_vars[1]) * norm_loss_pcm + uncertainty_reg * loss_log_vars[1]
                 )
-            if use_cons and (loss_cons is not None):
-                # 连续软启动：前若干epoch逐步引入一致性，不使用硬分段
-                cons_scale = min(1.0, float(ep + 1) / float(cons_ramp_epochs))
-                loss = loss + (configs.loss_beta * cons_scale) * (
-                    torch.exp(-loss_log_vars[2]) * loss_cons + uncertainty_reg * loss_log_vars[2]
-                )
+
+            aux_terms = []
+            if pcm_term is not None:
+                aux_terms.append(pcm_term)
+
+            if pam_term is not None:
+                loss = pam_priority_factor * pam_term
+                if len(aux_terms) > 0:
+                    aux_total = aux_terms[0]
+                    for aux_t in aux_terms[1:]:
+                        aux_total = aux_total + aux_t
+
+                    aux_limit = aux_to_pam_max_ratio * torch.clamp(torch.abs(pam_term.detach()), min=1e-8)
+                    aux_total_detached = torch.abs(aux_total.detach())
+                    if aux_total_detached.item() > aux_limit.item():
+                        scale = aux_limit / torch.clamp(aux_total_detached, min=1e-8)
+                        aux_total = aux_total * scale
+                    loss = loss + aux_total
+            else:
+                if len(aux_terms) > 0:
+                    loss = aux_terms[0]
+                    for aux_t in aux_terms[1:]:
+                        loss = loss + aux_t
 
             # 反向传播和优化
             optimizer.zero_grad()
@@ -248,17 +235,15 @@ def train(configs):
         avg_loss = epoch_loss_sum / len(train_loader)
         avg_loss_pam = epoch_loss_pam / len(train_loader) if use_pam else 0.0
         avg_loss_pcm = epoch_loss_pcm / len(train_loader) if use_pcm else 0.0
-        avg_loss_cons = epoch_loss_cons / len(train_loader) if use_cons else 0.0
         current_lr = optimizer.param_groups[0]['lr']
         with torch.no_grad():
             w_pam = float(torch.exp(-loss_log_vars[0]).item())
             w_pcm = float(torch.exp(-loss_log_vars[1]).item())
-            w_cons = float(torch.exp(-loss_log_vars[2]).item())
         print(
             f'轮次 [{ep + 1}/{configs.epoch}], 平均损失: {avg_loss:.8f} | '
             f'L_pam: {avg_loss_pam:.6f} | L_pcm: {avg_loss_pcm:.6f} | '
             f'L_cons: {avg_loss_cons:.6f} | w_pam: {w_pam:.3f} | w_pcm: {w_pcm:.3f} | '
-            f'w_cons: {w_cons:.3f} | alpha: {alpha:.2f} | LR: {current_lr:.2e}'
+            f'LR: {current_lr:.2e}'
         )
 
         # CosineAnnealing：每个epoch步进一次（不需要传参数）
@@ -270,7 +255,7 @@ def train(configs):
         elif best_model_metric == 'total_loss':
             metric_value = avg_loss
         elif best_model_metric == 'hybrid':
-            metric_value = avg_loss_pam + 0.2 * avg_loss_pcm + 0.1 * avg_loss_cons
+            metric_value = avg_loss_pam + 0.2 * avg_loss_pcm
         else:
             raise ValueError(f"未知 best_model_metric: {best_model_metric}")
 

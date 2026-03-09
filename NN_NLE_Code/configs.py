@@ -7,15 +7,13 @@ import os
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def _build_ablation_tag(use_pam, use_pcm, use_cons):
+def _build_ablation_tag(use_pam, use_pcm):
     """根据损失开关生成消融标签。"""
-    if use_pam and (not use_pcm) and (not use_cons):
+    if use_pam and (not use_pcm):
         return 'ablation_pam_only'
-    if use_pam and use_pcm and (not use_cons):
+    if use_pam and use_pcm:
         return 'ablation_pam_pcm'
-    if use_pam and use_pcm and use_cons:
-        return 'ablation_full_pcdnn'
-    return f'ablation_custom_p{int(use_pam)}_m{int(use_pcm)}_c{int(use_cons)}'
+    return f'ablation_custom_p{int(use_pam)}_m{int(use_pcm)}'
 
 
 def get_config(target_power=None, ablation_profile=None):
@@ -69,16 +67,15 @@ def get_config(target_power=None, ablation_profile=None):
     # 是否启用各损失项
     config.use_loss_pam = True
     config.use_loss_pcm = True
-    config.use_loss_cons = True
     if ablation_profile is not None:
         config.use_loss_pam = bool(ablation_profile.get('use_loss_pam', config.use_loss_pam))
         config.use_loss_pcm = bool(ablation_profile.get('use_loss_pcm', config.use_loss_pcm))
-        config.use_loss_cons = bool(ablation_profile.get('use_loss_cons', config.use_loss_cons))
+
+    # 一致性损失在当前版本已移除（后续改为级联双头再验证）
+    config.use_loss_cons = False
 
     # 损失权重
     config.loss_alpha = 1.0  # L_pcm 权重
-    # L_cons 默认降权，避免在中高SNR点压制PAM判决边界
-    config.loss_beta = 0.08
     # 最优模型判据: 'pam_loss' | 'total_loss' | 'hybrid'
     # 建议通信性能优先时使用 pam_loss
     config.best_model_metric = 'pam_loss'
@@ -86,21 +83,22 @@ def get_config(target_power=None, ablation_profile=None):
     ## =========================================================
     ## 3.2 自适应损失权重与断点控制
     ## =========================================================
-    # 使用可学习的不确定性权重自动平衡 L_pam / L_pcm / L_cons
+    # 使用可学习的不确定性权重自动平衡 L_pam / L_pcm
     config.loss_weight_strategy = 'auto_uncertainty'
-
-    # 一致性项配置：
-    # - 'pcm_head': 约束 soft-DAC(pam_out) 与 pcm_out 一致（推荐，避免对标签重复硬约束）
-    # - 'pcm_label': 约束 soft-DAC(pam_out) 与 pcm_labels 一致（旧方式）
-    config.consistency_target = 'pcm_head'
-    # 一致性损失软启动占比（非硬分段）
-    config.consistency_ramp_ratio = 0.35
-    # Soft-DAC 温度范围（过大温度会使梯度过硬）
-    config.soft_dac_alpha_start = 3.0
-    config.soft_dac_alpha_end = 12.0
 
     # 自适应权重的稳定系数（越小越稳健，建议 0.01~0.2）
     config.auto_uncertainty_reg = 0.05
+
+    # 多任务稳定性增强：对各loss做EMA尺度归一化，减少量纲差异带来的权重抖动
+    config.use_loss_ema_normalization = True
+    config.loss_ema_momentum = 0.98
+    config.loss_norm_eps = 1e-8
+
+    # 主任务优先：对PAM项给予固定优先系数，确保SER/BER目标不被辅助任务稀释
+    config.pam_priority_factor = 1.20
+
+    # 辅助任务限幅：限制 (PCM+CONS) 贡献不超过 PAM项的一定比例（自适应，不是分段）
+    config.aux_to_pam_max_ratio = 0.80
 
     ## =========================================================
     ## 2. 目录与路径设置 (Directories & Paths)
@@ -114,7 +112,7 @@ def get_config(target_power=None, ablation_profile=None):
     loss_log_root_dir = r'E:\yinshibo\paperwork\Experiment_Data\20Gsyms_20km\NN_Loss_Log_txt'
 
     # 消融标签：作为现有保存根路径的下级目录，不破坏原有目录体系
-    config.ablation_tag = _build_ablation_tag(config.use_loss_pam, config.use_loss_pcm, config.use_loss_cons)
+    config.ablation_tag = _build_ablation_tag(config.use_loss_pam, config.use_loss_pcm)
 
     output_dir = os.path.join(output_root_dir, config.ablation_tag)
     loss_log_dir = os.path.join(loss_log_root_dir, config.ablation_tag)
