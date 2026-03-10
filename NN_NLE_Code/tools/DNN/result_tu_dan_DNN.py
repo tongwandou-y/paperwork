@@ -8,7 +8,7 @@ import re
 # ==============================================================================
 
 # [基础路径]
-base_root = r'D:\paperwork\Experiment_Data'
+base_root = r'D:\paperwork\Experiment_Data_仿真'
 
 # [核心变量]: 当前要画图的实验场景
 target_scenario = '30Gsyms_20km'

@@ -1,11 +1,11 @@
-# DNNV3-0/models/model/DNN.py
+# DNNV3-0/models/model/PP-CDNN.py
 
 from torch import nn
 import torch
 
-class DNN(nn.Module):
+class PP_CDNN(nn.Module):
     def __init__(self, config):
-        super(DNN, self).__init__()
+        super(PP_CDNN, self).__init__()
         self.device = config.device
 
         # 完整的滑动窗口长度
@@ -36,20 +36,22 @@ class DNN(nn.Module):
         self.ln_pcm = nn.Linear(64, 1)
         self.tanh = nn.Tanh()
 
-        # PAM 头输入维度 = 共享特征(64) + PCM回注特征(1)
+        # PAM 头输入维度 = 共享特征(64) + PCM回注特征(1) + 门控特征(64)
+        # 门控特征采用逐通道乘法 x * pcm_out，增强“PCM先验 -> PAM判决”耦合强度。
         self.pam_fusion = nn.Sequential(
-            nn.Linear(65, 64),
-            nn.BatchNorm1d(64),
+            nn.Linear(129, 96),
+            nn.BatchNorm1d(96),
             nn.GELU(),
-            nn.Linear(64, self.block_size)
+            nn.Linear(96, self.block_size)
         )
 
     def forward(self, x):
         x = self.ls(x)
         # Head-B: 先预测PCM，Tanh限制在[-1, 1]
         pcm_out = self.tanh(self.ln_pcm(x))
-        # Head-A: 将PCM预测值级联回注后做PAM判决
-        pam_in = torch.cat([x, pcm_out], dim=1)
+        # Head-A: 级联 + 门控回注
+        gated_feat = x * pcm_out
+        pam_in = torch.cat([x, pcm_out, gated_feat], dim=1)
         pam_out = self.pam_fusion(pam_in)
         return pam_out, pcm_out
 

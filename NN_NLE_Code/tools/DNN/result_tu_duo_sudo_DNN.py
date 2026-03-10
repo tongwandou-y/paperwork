@@ -8,17 +8,17 @@ import re
 # 1. 全局配置区域
 # ==============================================================================
 
-base_root = r'D:\paperwork\Experiment_Data'
+base_root = r'D:\paperwork\Experiment_Data_仿真'
 
 # [对比列表]：不同速率 (20km固定)
 scenarios_list = [
-    '5Gsyms_20km',
     '10Gsyms_20km',
-    '20Gsyms_20km'
+    '20Gsyms_20km',
+    # '5Gsyms_20km'
 ]
 
 # [保存位置]
-save_dir = r'D:\paperwork\Experiment_Data\Comparison_Results'
+save_dir = r'D:\paperwork\Experiment_Data_仿真\Comparison_Results'
 
 # [文件名接口]
 output_filename_sqnr = 'PCM_SQNR_不同速率_20km.png'
@@ -27,7 +27,7 @@ output_filename_ber = 'BER_PAM4_不同速率_20km.png'
 
 # [参数范围]：您可以随意调整这个范围，只要在 -27 到 -15 之间即可
 # 例如：改为 -22 到 -15
-rop = np.arange(-22, -14, 1)
+rop = np.arange(-27, -14, 1)
 
 # [关键常量]：定义原始数据文件(.md)中数据的起始点
 # 您提到 .md 文件中数据是从 -27dBm 开始的
@@ -159,7 +159,7 @@ def annotate_max_diff(ax, metric_prefix, unit_label):
 
 
 # ==============================================================================
-# 4. 样式配置
+# 4. 样式配置 (修复版)
 # ==============================================================================
 
 model_styles = {
@@ -168,28 +168,31 @@ model_styles = {
     'dfe': {'c': 'green', 'm': '^', 'name': 'DFE'}
 }
 
-scenario_styles = [
-    {'ls': '-', 'mfc': 'auto'},  # 5G
-    {'ls': '--', 'mfc': 'none'},  # 10G
-    {'ls': ':', 'mfc': 'auto'}  # 20G
-]
+# 使用字典将样式直接绑定到具体的场景名称上，避免索引错位
+scenario_styles = {
+    '5Gsyms_20km': {'ls': '-', 'mfc': 'auto', 'label': '5Gsyms'},
+    '10Gsyms_20km': {'ls': '--', 'mfc': 'white', 'label': '10Gsyms'},
+    '20Gsyms_20km': {'ls': ':', 'mfc': 'auto', 'label': '20Gsyms'}
+}
 
 
 def plot_lines_on_ax(ax, data_prefix, use_log10=False):
     """
     通用绘图函数
     """
-    for i, sc_name in enumerate(scenarios_list):
-        style_cfg = scenario_styles[i % 3]
+    for sc_name in scenarios_list:
+        # 直接通过场景名称获取样式，不再依赖 i % 3
+        style_cfg = scenario_styles.get(sc_name)
+        if not style_cfg:
+            continue
+
         ls = style_cfg['ls']
         mfc = style_cfg['mfc']
 
         for model in ['dnn', 'volterra', 'dfe']:
             y = get_data(data_prefix, model, sc_name)
 
-            # [Log10 处理]
             if use_log10:
-                # 将 0 或负数替换为极小值 (-9)
                 safe_y = np.where(y > 0, y, 1e-9)
                 plot_y = np.log10(safe_y)
             else:
@@ -208,26 +211,37 @@ def plot_lines_on_ax(ax, data_prefix, use_log10=False):
 
 
 def create_custom_legend(is_evm=False):
-    legend_elements = []
-    # 模型
-    legend_elements.append(Line2D([0], [0], color='blue', marker='o', lw=0, label='DNN-NLE'))
-    legend_elements.append(Line2D([0], [0], color='red', marker='s', lw=0, label='Volterra'))
-    legend_elements.append(Line2D([0], [0], color='green', marker='^', lw=0, label='DFE'))
-    # 空行
-    legend_elements.append(Line2D([0], [0], color='white', label=' '))
-    # 速率
-    legend_elements.append(
-        Line2D([0], [0], color='black', marker='o', linestyle='-', markerfacecolor='black', label='5Gsyms'))
-    legend_elements.append(
-        Line2D([0], [0], color='black', marker='o', linestyle='--', markerfacecolor='white', label='10Gsyms'))
-    legend_elements.append(
-        Line2D([0], [0], color='black', marker='o', linestyle=':', markerfacecolor='black', label='20Gsyms'))
+    # 1. 准备左列元素 (固定为3个模型)
+    col1 = [
+        Line2D([0], [0], color='blue', marker='o', lw=0, label='DNN-NLE'),
+        Line2D([0], [0], color='red', marker='s', lw=0, label='Volterra'),
+        Line2D([0], [0], color='green', marker='^', lw=0, label='DFE')
+    ]
+
+    # 2. 准备右列元素 (动态数量的速率 + 可选的Limit)
+    col2 = []
+    for sc_name in scenarios_list:
+        cfg = scenario_styles[sc_name]
+        face_color = 'black' if cfg['mfc'] == 'auto' else 'white'
+        col2.append(
+            Line2D([0], [0], color='black', marker='o', linestyle=cfg['ls'],
+                   markerfacecolor=face_color, label=cfg['label'])
+        )
 
     if is_evm:
-        legend_elements.append(Line2D([0], [0], color='black', linestyle='--', linewidth=1.5, label='16QAM Limit'))
+        col2.append(Line2D([0], [0], color='black', linestyle='--', linewidth=1.5, label='16QAM Limit'))
 
-    return legend_elements
+    # 3. 智能对齐两列长度 (用透明占位符填补短的一边到底部)
+    max_len = max(len(col1), len(col2))
+    blank = Line2D([0], [0], color='none', marker='None', label=' ')  # 完全隐形的占位符
 
+    while len(col1) < max_len:
+        col1.append(blank)
+    while len(col2) < max_len:
+        col2.append(blank)
+
+    # 4. 合并输出 (matplotlib 会自动将前半部分放在左列，后半部分放在右列)
+    return col1 + col2
 
 # 确保保存目录存在
 if not os.path.exists(save_dir):

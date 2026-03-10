@@ -44,8 +44,20 @@ def get_config(target_power=None, ablation_profile=None):
     quant_bits = 8
     # 存入 config 对象
     config.quant = quant_bits
-    # 模型类型选择: 'DNN' 或 'CNN'
-    config.model_type = 'DNN'
+
+    # --------------------------------------------------------------
+    # 之后切换模型只需要在修改config.model_file和config.model_class这两个变量即可
+    # 模型的文件需要放在NN_NLE_Code/models/model/下
+    # --------------------------------------------------------------
+
+    # 模型选择（支持任意 models/model/*.py 文件名）
+    # 例如: 'PP_CDNN.py'、'DNN.py'、'MyNewModel.py'
+    config.model_file = 'PP_CDNN.py'
+    # 模型类名（该 .py 文件中的 nn.Module 类名）
+    # 若留空(None)，运行时会自动寻找第一个 nn.Module 子类
+    config.model_class = 'PP_CDNN'
+    # 用于实验名与输出文件命名的模型标签（默认取文件名去后缀）
+    config.model_type = os.path.splitext(config.model_file)[0]
 
     # PRBS 序列名称
     train_prbs = 'PRBS23'
@@ -99,6 +111,13 @@ def get_config(target_power=None, ablation_profile=None):
 
     # 辅助任务限幅：限制 (PCM+CONS) 贡献不超过 PAM项的一定比例（自适应，不是分段）
     config.aux_to_pam_max_ratio = 0.80
+
+    # 在 PAM+PCM 组中提升 PCM 影响力，放大多任务收益
+    if config.use_loss_pam and config.use_loss_pcm:
+        config.loss_alpha = 2.0
+        config.pam_priority_factor = 1.00
+        config.aux_to_pam_max_ratio = 1.50
+        config.loss_ema_momentum = 0.95
 
     ## =========================================================
     ## 2. 目录与路径设置 (Directories & Paths)

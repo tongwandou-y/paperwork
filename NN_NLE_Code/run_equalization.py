@@ -10,8 +10,7 @@ import os
 from torch.utils.data import DataLoader, TensorDataset
 
 import configs as cfg
-from models.model.DNN import DNN  # 确保使用与训练时相同的模型
-from models.model.CNN import CNN
+from util.model_loader import build_model_from_config
 from util.utils import load_checkpoint  # 导入加载检查点的函数
 
 
@@ -49,7 +48,7 @@ def create_block_window_for_test(signal, taps, block_size):
 
 
 def run_equalization(configs):
-    # 使用 f-string 动态显示当前模型类型 (DNN 或 CNN)
+    # 使用配置动态显示当前模型类型
     print(f"--- 开始执行 {configs.model_type} 均衡（测试）---")
     device = configs.device
 
@@ -72,13 +71,9 @@ def run_equalization(configs):
         print(f"输出目录不存在，已自动创建: {output_dir}")
 
     # --- 2. 加载模型和训练好的权重 ---
-    print(f"加载模型: {configs.model_type}...")
-    if configs.model_type == 'DNN':
-        model = DNN(configs).to(device)
-    elif configs.model_type == 'CNN':
-        model = CNN(configs).to(device)
-    else:
-        raise ValueError(f"未知的模型类型: {configs.model_type}")
+    model, model_class_name = build_model_from_config(configs)
+    model = model.to(device)
+    print(f"加载模型: file={configs.model_file}, class={model_class_name}...")
 
     try:
         # 加载最新的检查点

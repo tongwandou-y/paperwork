@@ -3,8 +3,7 @@
 from torch.utils.data import DataLoader
 from util.load_data_mat import MatDatasetBlock
 from util.utils import *
-from models.model.DNN import DNN
-from models.model.CNN import CNN
+from util.model_loader import build_model_from_config
 from torch import nn
 import configs as cfg
 import time
@@ -55,14 +54,9 @@ def train(configs):
     print("--- 诊断结束 ---\n")
 
     # --- 2. 模型初始化、损失函数、优化器 ---
-    print(f"正在初始化模型: {configs.model_type} ...")
-
-    if configs.model_type == 'DNN':
-        model = DNN(configs).to(device)
-    elif configs.model_type == 'CNN':
-        model = CNN(configs).to(device)
-    else:
-        raise ValueError(f"未知的模型类型: {configs.model_type}")
+    model, model_class_name = build_model_from_config(configs)
+    model = model.to(device)
+    print(f"正在初始化模型: file={configs.model_file}, class={model_class_name} ...")
 
     init_weights(model, init_type=configs.init_type)
     criterion = nn.MSELoss()
@@ -270,9 +264,9 @@ def train(configs):
 
         # 保存检查点
         ckpt_payload = {'epoch': ep + 1,
-                        'model': model.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'scheduler': scheduler.state_dict(),
+                         'model': model.state_dict(),
+                         'optimizer': optimizer.state_dict(),
+                         'scheduler': scheduler.state_dict(),
                         'loss': avg_loss,
                         'model_select_metric': best_model_metric,
                         'model_select_value': metric_value,
