@@ -10,37 +10,70 @@ base_root = r'D:\paperwork\Experiment_Data'
 target_scenario = '20Gsyms_20km'
 x_values = list(range(-24, -14))
 
-file_template_dnn = 'Report_PRBS31_test_DNN_{}dBm.txt'
-file_template_volterra = 'Report_PRBS31_test_Volterra_{}dBm.txt'
-file_template_dfe = 'Report_PRBS31_test_DFE_{}dBm.txt'
+# [新增功能]: 在这里手动配置你本次想要提取的实验组别
+# 可选列表: 'DFE', 'Volterra', 'DNN', 'SH_DNN', 'PP_CDNN'
+# 你可以随意注释掉或删除不需要的组别，脚本会动态适配
+SELECTED_GROUPS = [
+    'DFE',
+    'Volterra',
+    'DNN',
+    'SH_DNN',
+    'PP_CDNN'
+]
 
 # ==============================================================================
-# 2. 自动路径构建与映射配置
+# 2. 自动路径构建与全量实验库配置
 # ==============================================================================
 
 current_exp_dir = os.path.join(base_root, target_scenario)
 
-path_pam_only = os.path.join(current_exp_dir, 'RX_Matlab_Result_Reports_txt', 'DNN', 'ablation_pam_only')
-path_pam_pcm = os.path.join(current_exp_dir, 'RX_Matlab_Result_Reports_txt', 'DNN', 'ablation_pam_pcm')
-path_volterra = os.path.join(current_exp_dir, 'RX_Matlab_Result_Reports_txt', 'Volterra')
-path_dfe = os.path.join(current_exp_dir, 'RX_Matlab_Result_Reports_txt', 'DFE')
+# 建立一个全量实验字典库，集中管理所有可能跑的实验路径和文件模板
+# [已更新]: 为深度学习模型追加了子文件夹路径
+ALL_EXPERIMENTS = {
+    'DFE': (
+        os.path.join(current_exp_dir, 'RX_Matlab_Result_Reports_txt', 'DFE'),
+        'Report_PRBS31_test_DFE_{}dBm.txt',
+        'DFE'
+    ),
+    'Volterra': (
+        os.path.join(current_exp_dir, 'RX_Matlab_Result_Reports_txt', 'Volterra'),
+        'Report_PRBS31_test_Volterra_{}dBm.txt',
+        'Volterra'
+    ),
+    'DNN': (
+        os.path.join(current_exp_dir, 'RX_Matlab_Result_Reports_txt', 'DNN', 'baseline_dnn'),
+        'Report_PRBS31_test_DNN_{}dBm.txt',
+        'DNN'
+    ),
+    'SH_DNN': (
+        os.path.join(current_exp_dir, 'RX_Matlab_Result_Reports_txt', 'SH_DNN', 'sh_dnn'),
+        'Report_PRBS31_test_SH_DNN_{}dBm.txt',
+        'SH_DNN'
+    ),
+    'PP_CDNN': (
+        os.path.join(current_exp_dir, 'RX_Matlab_Result_Reports_txt', 'PP_CDNN', 'pp_cdnn'),
+        'Report_PRBS31_test_PP_CDNN_{}dBm.txt',
+        'PP_CDNN'
+    )
+}
 
 output_filename = f'results_{target_scenario}.md'
 output_file_path = os.path.join(current_exp_dir, output_filename)
 
 print(f"当前处理场景: {target_scenario}")
+print(f"当前选择提取的组别: {SELECTED_GROUPS}")
 print(f"输出文件路径: {output_file_path}")
 print("-" * 30)
 
-experiments = {
-    'pam_only': (path_pam_only, file_template_dnn, 'pam_only'),
-    'pam_pcm': (path_pam_pcm, file_template_dnn, 'pam_pcm'),
-    'Volterra': (path_volterra, file_template_volterra, 'Volterra'),
-    'DFE': (path_dfe, file_template_dfe, 'DFE')
-}
+# 根据你的手动选择，动态过滤出本次要提取的实验任务
+experiments = {k: ALL_EXPERIMENTS[k] for k in SELECTED_GROUPS if k in ALL_EXPERIMENTS}
+
+if not experiments:
+    print("[致命警告] 你选择的实验组别为空或不在支持的列表中，请检查 SELECTED_GROUPS 变量！")
+    exit()
 
 # ==============================================================================
-# 3. 指标正则配置
+# 3. 指标正则配置 (保留原有的稳健逻辑)
 # ==============================================================================
 metrics_config = [
     {
@@ -170,7 +203,8 @@ with open(output_file_path, 'w', encoding='utf-8') as f:
     f.write(f"## 实验数据提取日志: {target_scenario}\n\n")
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     f.write(f"> **范围:** {x_values[0]} dBm 到 {x_values[-1]} dBm\n")
-    f.write(f"> **生成时间:** {current_time}\n\n")
+    f.write(f"> **生成时间:** {current_time}\n")
+    f.write(f"> **包含组别:** {', '.join(experiments.keys())}\n\n")
 
     for metric in metrics_config:
         m_name = metric['name']
@@ -180,7 +214,7 @@ with open(output_file_path, 'w', encoding='utf-8') as f:
         f.write(f"## {m_name} - {m_unit}\n\n")
         f.write("```python\n")
 
-        # [已修复]：改为动态读取字典 keys，杜绝硬编码导致的 KeyError
+        # 动态读取当前被激活的字典 keys
         for exp_type in experiments.keys():
             _, _, var_suffix = experiments[exp_type]
             values_list = all_data[m_name][exp_type]

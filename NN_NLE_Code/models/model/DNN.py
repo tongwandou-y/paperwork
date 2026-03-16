@@ -10,52 +10,42 @@ class DNN(nn.Module):
 
         # 完整的滑动窗口长度
         input_dim = 2 * config.seq_len + 1
-        # 物理块大小 G = quant / Mm (PAM4 => Mm=2)
-        self.block_size = config.quant // 2
 
         # 定义子网络块：线性层 -> 批归一化 -> 激活函数
         def fullnet(in_dim, out_dim):
             return nn.Sequential(
                 nn.Linear(in_dim, out_dim),
+                # BatchNorm1d 适用于批处理数据, 每个通道独立归一化
                 nn.BatchNorm1d(out_dim),
+                # 【修改点】使用 GELU 替代 ReLU
+                # GELU (Gaussian Error Linear Unit) 提供平滑的非线性，更适合模拟信号回归
                 nn.GELU()
             )
 
-        # ====================== 骨干网络 ======================
-        # 增大容量：17 → 256 → 128 → 64
-        # 为双头4+1输出提供更丰富的共享特征表示
         self.ls = nn.Sequential(
             fullnet(in_dim=input_dim, out_dim=256),
             fullnet(256, 128),
             fullnet(128, 64)
         )
 
-        # ====================== 级联双头输出层 ======================
-        # Head-B (PCM) 先预测连续电压，再作为先验回注到 Head-A (PAM)。
-        # 这样 PCM 任务不再只是旁路监督，而是直接参与 PAM 判决特征构建。
-        self.ln_pcm = nn.Linear(64, 1)
-        self.tanh = nn.Tanh()
-
-        # PAM 头输入维度 = 共享特征(64) + PCM回注特征(1)
-        self.pam_fusion = nn.Sequential(
-            nn.Linear(65, 64),
-            nn.BatchNorm1d(64),
-            nn.GELU(),
-            nn.Linear(64, self.block_size)
-        )
+        # 输出层：线性映射到 1 维
+        self.ln = nn.Linear(64, 1)
+        pam_act_name = str(getattr(config, 'pam_output_activation', 'tanh')).lower()
+        self.pam_act = nn.Tanh() if pam_act_name == 'tanh' else nn.Identity()
 
     def forward(self, x):
+        # x的输入形状是 [batch_size, taps]，需要先展平
+        # 注意：在 train.py 中，我们会确保输入是正确的二维形状
         x = self.ls(x)
-        # Head-B: 先预测PCM，Tanh限制在[-1, 1]
-        pcm_out = self.tanh(self.ln_pcm(x))
-        # Head-A: 将PCM预测值级联回注后做PAM判决
-        pam_in = torch.cat([x, pcm_out], dim=1)
-        pam_out = self.pam_fusion(pam_in)
-        return pam_out, pcm_out
+        x = self.ln(x)
+        x = self.pam_act(x)
+        return x
 
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
+                # 使用 Kaiming 初始化 (适配 GELU/ReLU)
+                # mode='fan_out' 保持前向传播中方差的一致性
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)

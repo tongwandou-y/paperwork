@@ -1,7 +1,7 @@
 # DNNV3-0/train.py
 
 from torch.utils.data import DataLoader
-from util.load_data_mat import MatDatasetBlock
+from util.load_data_mat import MatDataset, MatDatasetBlock
 from util.utils import *
 from util.model_loader import build_model_from_config
 from torch import nn
@@ -15,12 +15,22 @@ import numpy as np
 def train(configs):
     device = configs.device
 
-    # --- 1. 使用新的MatlabDataset加载数据 ---
-    print("使用MatDatasetBlock加载训练数据(块级对齐)...")
-
-    dataset = MatDatasetBlock(mat_file_path=configs.train_data_file,
+    # --- 1. 根据模型自动选择数据集 ---
+    data_mode = getattr(configs, 'data_mode', 'block')
+    if data_mode == 'symbol':
+        print("使用 MatDataset 加载训练数据(逐符号对齐)...")
+        dataset = MatDataset(
+            mat_file_path=configs.train_data_file,
+            seq_len=configs.seq_len,
+            is_train=True
+        )
+    else:
+        print("使用 MatDatasetBlock 加载训练数据(块级对齐)...")
+        dataset = MatDatasetBlock(
+            mat_file_path=configs.train_data_file,
                               seq_len=configs.seq_len,
-                              is_train=True)
+            is_train=True
+        )
 
     train_loader = DataLoader(
         dataset=dataset,
@@ -36,14 +46,20 @@ def train(configs):
     # 如果相关系数很低 (<0.1)，说明帧同步可能失败或数据对齐有误
     print("\n--- 数据质量诊断 ---")
     all_features = dataset.features.numpy()
-    all_labels_pam = dataset.labels_pam.numpy()
+    if data_mode == 'symbol':
+        all_labels_pam = dataset.labels.numpy()
+    else:
+        all_labels_pam = dataset.labels_pam.numpy()
     seq_len = configs.seq_len
     center_feat = all_features[:, seq_len]  # 窗口中心值 = 当前符号
-    for j in range(all_labels_pam.shape[1]):
-        corr = np.corrcoef(center_feat, all_labels_pam[:, j])[0, 1]
+    label_dim = all_labels_pam.shape[1] if all_labels_pam.ndim > 1 else 1
+    corr_list = []
+    for j in range(label_dim):
+        label_col = all_labels_pam[:, j] if all_labels_pam.ndim > 1 else all_labels_pam
+        corr = np.corrcoef(center_feat, label_col)[0, 1]
+        corr_list.append(corr)
         print(f"  输入中心 vs PAM标签[{j}] 相关系数: {corr:.4f}")
-    mean_corr = np.mean([np.corrcoef(center_feat, all_labels_pam[:, j])[0, 1]
-                         for j in range(all_labels_pam.shape[1])])
+    mean_corr = np.mean(corr_list)
     if abs(mean_corr) < 0.1:
         print("  ⚠️ 警告：输入与标签相关性极低！请检查帧同步和数据对齐是否正确。")
     else:
@@ -61,27 +77,41 @@ def train(configs):
     init_weights(model, init_type=configs.init_type)
     criterion = nn.MSELoss()
 
-    # ====================== 自适应损失权重策略 ======================
-    # 仅保留 auto_uncertainty 路径，移除旧的手动分段逻辑
-    use_auto_uncertainty = (getattr(configs, 'loss_weight_strategy', 'auto_uncertainty') == 'auto_uncertainty')
-    if not use_auto_uncertainty:
-        raise ValueError("当前版本仅支持 loss_weight_strategy='auto_uncertainty'")
-    uncertainty_reg = float(getattr(configs, 'auto_uncertainty_reg', 0.05))
+    # ====================== 损失策略选择 ======================
+    # 单任务(pam)使用纯 MSE；仅多任务(pam_pcm)使用 auto_uncertainty
+    task_type = getattr(configs, 'task_type', 'pam')
+    use_auto_uncertainty = (
+        task_type == 'pam_pcm'
+        and getattr(configs, 'loss_weight_strategy', 'auto_uncertainty') == 'auto_uncertainty'
+    )
+    if (task_type == 'pam_pcm') and (not use_auto_uncertainty):
+        raise ValueError("pam_pcm 任务当前仅支持 loss_weight_strategy='auto_uncertainty'")
+    # 标准不确定性形式: exp(-s)*L + s
+    # auto_uncertainty_reg 仅作为 log_var 的 L2 稳定正则，不参与主项比例缩放。
+    logvar_l2_reg = float(getattr(configs, 'auto_uncertainty_reg', 0.05))
     use_loss_ema_normalization = bool(getattr(configs, 'use_loss_ema_normalization', True))
     loss_ema_momentum = float(getattr(configs, 'loss_ema_momentum', 0.98))
     loss_norm_eps = float(getattr(configs, 'loss_norm_eps', 1e-8))
     pam_priority_factor = float(getattr(configs, 'pam_priority_factor', 1.20))
     aux_to_pam_max_ratio = float(getattr(configs, 'aux_to_pam_max_ratio', 0.80))
 
-    # 可学习的log-variance参数（对应 L_pam / L_pcm）
-    # 初始化为0 -> 初始权重约为1
-    loss_log_vars = nn.Parameter(torch.zeros(2, device=device))
-    # 用于loss尺度归一化的EMA状态，避免不同任务量纲差异导致权重抖动
-    loss_ema_state = torch.ones(2, device=device)
-    optimizer = torch.optim.Adam(
-        list(model.parameters()) + [loss_log_vars],
-        lr=configs.learn_rate
-    )
+    # 可学习的log-variance参数与EMA状态仅在多任务下启用
+    loss_log_vars = None
+    loss_ema_state = None
+    if use_auto_uncertainty:
+        # 对应 L_pam / L_pcm；初始化为0 -> 初始权重约为1
+        loss_log_vars = nn.Parameter(torch.zeros(2, device=device))
+        # 用于loss尺度归一化的EMA状态，避免不同任务量纲差异导致权重抖动
+        loss_ema_state = torch.ones(2, device=device)
+        optimizer = torch.optim.Adam(
+            list(model.parameters()) + [loss_log_vars],
+            lr=configs.learn_rate
+        )
+    else:
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=configs.learn_rate
+        )
 
     # ====================== 学习率调度器 ======================
     # 【关键修改】用 CosineAnnealingLR 替换 ReduceLROnPlateau
@@ -109,7 +139,7 @@ def train(configs):
         optimizer.load_state_dict(ckpt['optimizer'])
         if 'scheduler' in ckpt:
             scheduler.load_state_dict(ckpt['scheduler'])
-        if 'loss_log_vars' in ckpt:
+        if (loss_log_vars is not None) and ('loss_log_vars' in ckpt):
             with torch.no_grad():
                 ckpt_log_vars = ckpt['loss_log_vars'].to(device).flatten()
                 n_copy = min(loss_log_vars.numel(), ckpt_log_vars.numel())
@@ -121,7 +151,7 @@ def train(configs):
             if not os.path.exists(log_dir):
                 os.makedirs(log_dir)
             with open(log_file_path, "w") as f:
-                f.write("Epoch,Loss,L_pam,L_pcm,L_cons,LearningRate\n")
+                f.write("Epoch,Loss,L_pam,L_pcm,LearningRate\n")
 
     except FileNotFoundError:
         print('[*] 没有找到检查点，从头开始训练。')
@@ -130,7 +160,7 @@ def train(configs):
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
         with open(log_file_path, "w") as f:
-            f.write("Epoch,Loss,L_pam,L_pcm,L_cons,LearningRate\n")
+            f.write("Epoch,Loss,L_pam,L_pcm,LearningRate\n")
 
     # --- 4. 训练循环 ---
     print(f"\n开始训练，共 {configs.epoch} 轮...")
@@ -140,19 +170,31 @@ def train(configs):
         epoch_loss_sum = 0.0
         epoch_loss_pam = 0.0
         epoch_loss_pcm = 0.0
-        avg_loss_cons = 0.0
+        use_pam = True
+        use_pcm = (task_type == 'pam_pcm')
 
-        # 损失项开关
-        use_pam = configs.use_loss_pam
-        use_pcm = configs.use_loss_pcm
+        for i, batch_data in enumerate(train_loader):
+            if data_mode == 'symbol':
+                # MatDataset: (features, dummy_features, labels)
+                features, _, pam_labels = batch_data
+                pcm_labels = None
+            else:
+                # MatDatasetBlock: (features, labels_pam, labels_pcm)
+                features, pam_labels, pcm_labels = batch_data
 
-        for i, (features, pam_labels, pcm_labels) in enumerate(train_loader):
             features = features.to(device)
             pam_labels = pam_labels.to(device)
+            if pcm_labels is not None:
             pcm_labels = pcm_labels.to(device)
 
             # 前向传播
-            pam_out, pcm_out = model(features)
+            model_out = model(features)
+            if isinstance(model_out, (tuple, list)):
+                pam_out = model_out[0]
+                pcm_out = model_out[1] if len(model_out) > 1 else None
+            else:
+                pam_out = model_out
+                pcm_out = None
 
             # 计算损失
             loss = torch.tensor(0.0, device=device)
@@ -161,60 +203,68 @@ def train(configs):
             if use_pam:
                 loss_pam = criterion(pam_out, pam_labels)
                 epoch_loss_pam += loss_pam.item()
-            if use_pcm:
+            if use_pcm and (pcm_out is not None) and (pcm_labels is not None):
                 loss_pcm = criterion(pcm_out, pcm_labels)
                 epoch_loss_pcm += loss_pcm.item()
 
-            # 组合总损失（自适应多任务 + 主任务保护）
-            # 1) 可选EMA归一化：消除不同loss量纲差异
-            # 2) 不确定性加权：自动学习各任务相对权重
-            # 3) PAM优先与辅助限幅：保证SER/BER目标不被辅助任务拖累
-            def normalize_loss_with_ema(raw_loss, idx):
-                if (raw_loss is None) or (not use_loss_ema_normalization):
-                    return raw_loss
-                with torch.no_grad():
-                    loss_ema_state[idx] = (
-                        loss_ema_momentum * loss_ema_state[idx]
-                        + (1.0 - loss_ema_momentum) * raw_loss.detach()
-                    )
-                denom = torch.clamp(loss_ema_state[idx].detach(), min=loss_norm_eps)
-                return raw_loss / denom
-
-            norm_loss_pam = normalize_loss_with_ema(loss_pam, 0)
-            norm_loss_pcm = normalize_loss_with_ema(loss_pcm, 1)
-
-            pam_term = None
-            pcm_term = None
-
-            if use_pam and (norm_loss_pam is not None):
-                pam_term = torch.exp(-loss_log_vars[0]) * norm_loss_pam + uncertainty_reg * loss_log_vars[0]
-            if use_pcm and (norm_loss_pcm is not None):
-                pcm_term = configs.loss_alpha * (
-                    torch.exp(-loss_log_vars[1]) * norm_loss_pcm + uncertainty_reg * loss_log_vars[1]
-                )
-
-            aux_terms = []
-            if pcm_term is not None:
-                aux_terms.append(pcm_term)
-
-            if pam_term is not None:
-                loss = pam_priority_factor * pam_term
-                if len(aux_terms) > 0:
-                    aux_total = aux_terms[0]
-                    for aux_t in aux_terms[1:]:
-                        aux_total = aux_total + aux_t
-
-                    aux_limit = aux_to_pam_max_ratio * torch.clamp(torch.abs(pam_term.detach()), min=1e-8)
-                    aux_total_detached = torch.abs(aux_total.detach())
-                    if aux_total_detached.item() > aux_limit.item():
-                        scale = aux_limit / torch.clamp(aux_total_detached, min=1e-8)
-                        aux_total = aux_total * scale
-                    loss = loss + aux_total
+            if not use_auto_uncertainty:
+                # 单任务基线：直接优化 PAM MSE，避免不确定性项抬高总损失
+                loss = loss_pam
             else:
-                if len(aux_terms) > 0:
-                    loss = aux_terms[0]
-                    for aux_t in aux_terms[1:]:
-                        loss = loss + aux_t
+                # 组合总损失（自适应多任务 + 主任务保护）
+                # 1) 可选EMA归一化：消除不同loss量纲差异
+                # 2) 不确定性加权：自动学习各任务相对权重
+                # 3) PAM优先与辅助限幅：保证SER/BER目标不被辅助任务拖累
+                def normalize_loss_with_ema(raw_loss, idx):
+                    if (raw_loss is None) or (not use_loss_ema_normalization):
+                        return raw_loss
+                    with torch.no_grad():
+                        loss_ema_state[idx] = (
+                            loss_ema_momentum * loss_ema_state[idx]
+                            + (1.0 - loss_ema_momentum) * raw_loss.detach()
+                        )
+                    denom = torch.clamp(loss_ema_state[idx].detach(), min=loss_norm_eps)
+                    return raw_loss / denom
+
+                norm_loss_pam = normalize_loss_with_ema(loss_pam, 0)
+                norm_loss_pcm = normalize_loss_with_ema(loss_pcm, 1)
+
+                pam_term = None
+                pcm_term = None
+
+                if use_pam and (norm_loss_pam is not None):
+                    pam_term = torch.exp(-loss_log_vars[0]) * norm_loss_pam + loss_log_vars[0]
+                    if logvar_l2_reg > 0:
+                        pam_term = pam_term + logvar_l2_reg * (loss_log_vars[0] ** 2)
+                if use_pcm and (norm_loss_pcm is not None):
+                    pcm_term = configs.loss_alpha * (
+                        torch.exp(-loss_log_vars[1]) * norm_loss_pcm + loss_log_vars[1]
+                    )
+                    if logvar_l2_reg > 0:
+                        pcm_term = pcm_term + configs.loss_alpha * logvar_l2_reg * (loss_log_vars[1] ** 2)
+
+                aux_terms = []
+                if pcm_term is not None:
+                    aux_terms.append(pcm_term)
+
+                if pam_term is not None:
+                    loss = pam_priority_factor * pam_term
+                    if len(aux_terms) > 0:
+                        aux_total = aux_terms[0]
+                        for aux_t in aux_terms[1:]:
+                            aux_total = aux_total + aux_t
+
+                        aux_limit = aux_to_pam_max_ratio * torch.clamp(torch.abs(pam_term.detach()), min=1e-8)
+                        aux_total_detached = torch.abs(aux_total.detach())
+                        if aux_total_detached.item() > aux_limit.item():
+                            scale = aux_limit / torch.clamp(aux_total_detached, min=1e-8)
+                            aux_total = aux_total * scale
+                        loss = loss + aux_total
+                else:
+                    if len(aux_terms) > 0:
+                        loss = aux_terms[0]
+                        for aux_t in aux_terms[1:]:
+                            loss = loss + aux_t
 
             # 反向传播和优化
             optimizer.zero_grad()
@@ -230,14 +280,21 @@ def train(configs):
         avg_loss_pam = epoch_loss_pam / len(train_loader) if use_pam else 0.0
         avg_loss_pcm = epoch_loss_pcm / len(train_loader) if use_pcm else 0.0
         current_lr = optimizer.param_groups[0]['lr']
-        with torch.no_grad():
-            w_pam = float(torch.exp(-loss_log_vars[0]).item())
-            w_pcm = float(torch.exp(-loss_log_vars[1]).item())
+        if use_auto_uncertainty:
+            with torch.no_grad():
+                w_pam = float(torch.exp(-loss_log_vars[0]).item())
+                w_pcm = float(torch.exp(-loss_log_vars[1]).item())
         print(
             f'轮次 [{ep + 1}/{configs.epoch}], 平均损失: {avg_loss:.8f} | '
             f'L_pam: {avg_loss_pam:.6f} | L_pcm: {avg_loss_pcm:.6f} | '
-            f'L_cons: {avg_loss_cons:.6f} | w_pam: {w_pam:.3f} | w_pcm: {w_pcm:.3f} | '
-            f'LR: {current_lr:.2e}'
+                f'w_pam: {w_pam:.3f} | w_pcm: {w_pcm:.3f} | '
+                f'LR: {current_lr:.2e}'
+            )
+        else:
+            print(
+                f'轮次 [{ep + 1}/{configs.epoch}], 平均损失: {avg_loss:.8f} | '
+                f'L_pam: {avg_loss_pam:.6f} | '
+                f'LR: {current_lr:.2e}'
         )
 
         # CosineAnnealing：每个epoch步进一次（不需要传参数）
@@ -260,7 +317,7 @@ def train(configs):
 
         # 写入日志
         with open(log_file_path, "a") as f:
-            f.write(f"{ep + 1},{avg_loss:.8f},{avg_loss_pam:.8f},{avg_loss_pcm:.8f},{avg_loss_cons:.8f},{current_lr}\n")
+            f.write(f"{ep + 1},{avg_loss:.8f},{avg_loss_pam:.8f},{avg_loss_pcm:.8f},{current_lr}\n")
 
         # 保存检查点
         ckpt_payload = {'epoch': ep + 1,
@@ -273,7 +330,8 @@ def train(configs):
                         'learning_rate': current_lr,
                         'config': configs,
                         }
-        ckpt_payload['loss_log_vars'] = loss_log_vars.detach().cpu()
+        if loss_log_vars is not None:
+            ckpt_payload['loss_log_vars'] = loss_log_vars.detach().cpu()
 
         save_checkpoint(ckpt_payload,
                         os.path.join(ckpt_dir, f'Epoch_({ep + 1}).ckpt'),

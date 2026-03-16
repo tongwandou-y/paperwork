@@ -16,6 +16,20 @@ target_scenario = '20Gsyms_20km'
 # [参数范围]: ROP (横坐标)
 rop = np.arange(-24, -14, 1)
 
+# [新增功能]: 手动选择要画的实验曲线 (必须与你 .md 文件中包含的组别一致)
+SELECTED_GROUPS = [
+    'DFE',
+    'Volterra',
+    'DNN',
+    'SH_DNN',
+    'PP_CDNN'
+]
+
+# [坐标系控制]: 设置对应指标是否开启对数坐标系 (True 开 / False 关)
+USE_LOG_Y_SQNR = False   # SQNR 默认线性坐标
+USE_LOG_Y_EVM  = False   # EVM 默认线性坐标
+USE_LOG_Y_BER  = True    # BER 默认对数坐标
+
 # [绘图设置]: 字体
 plt.rcParams['font.family'] = 'serif'
 plt.rcParams['font.serif'] = ['Times New Roman']
@@ -85,27 +99,34 @@ def get_data(prefix, model):
     if key in all_data:
         return all_data[key]
     else:
+        print(f"[警告] 缺失数据: {key}，将使用全 0 替代。")
         return np.zeros_like(rop, dtype=float)
 
 
 # ==============================================================================
-# 3. 通用单图绘制函数 (含对数坐标系切换参数)
+# 3. 通用单图绘制函数 (含动态组别选择)
 # ==============================================================================
 
-# [已修复]：移除了 full_pcdnn
-styles = {
-    'pam_only': {'c': 'gray', 'm': 'v', 'ls': ':', 'lbl': 'PAM-Only (Ablation)'},
-    'pam_pcm': {'c': 'orange', 'm': 'd', 'ls': '--', 'lbl': 'PAM+PCM (Ablation)'},
+# 构建全量样式库
+ALL_STYLES = {
+    'DFE':      {'c': '#2ca02c', 'm': '^', 'ls': '--', 'lbl': 'DFE'},
     'Volterra': {'c': '#1f77b4', 'm': 's', 'ls': '-.', 'lbl': 'Volterra'},
-    'DFE': {'c': '#2ca02c', 'm': '^', 'ls': '--', 'lbl': 'DFE'}
+    'DNN':      {'c': 'gray',    'm': 'v', 'ls': ':',  'lbl': 'DNN'},
+    'SH_DNN':   {'c': 'orange',  'm': 'd', 'ls': '--', 'lbl': 'SH-DNN'},
+    'PP_CDNN':  {'c': '#d62728', 'm': 'o', 'ls': '-',  'lbl': 'PP-CDNN'}
 }
 
+# 动态过滤当前需要的样式
+styles = {k: ALL_STYLES[k] for k in SELECTED_GROUPS if k in ALL_STYLES}
 
-# 增加 use_log_y 参数来控制坐标系
+if not styles:
+    print("[致命错误] 选中的画图组别为空，请检查 SELECTED_GROUPS 变量！")
+    exit()
+
 def plot_single_figure(metric_prefix, title, ylabel, filename_suffix, use_log_y=False):
     fig, ax = plt.subplots(figsize=(8, 6))
 
-    # [已修复]：改为动态读取 styles 的 keys，杜绝硬编码引发错误
+    # 动态读取选中的模型
     models_to_plot = list(styles.keys())
 
     for model in models_to_plot:
@@ -157,7 +178,7 @@ plot_single_figure(
     title='PCM SQNR Performance',
     ylabel='PCM SQNR (dB)',
     filename_suffix='SQNR',
-    use_log_y=False  # 线性坐标系
+    use_log_y=USE_LOG_Y_SQNR
 )
 
 # 2. rms EVM
@@ -166,7 +187,7 @@ plot_single_figure(
     title='rms EVM Performance',
     ylabel='rms EVM (%)',
     filename_suffix='EVM',
-    use_log_y=False  # 线性坐标系
+    use_log_y=USE_LOG_Y_EVM
 )
 
 # 3. BER (PAM4)
@@ -175,5 +196,5 @@ plot_single_figure(
     title='BER (PAM4) Performance',
     ylabel='Received PAM4 BER',
     filename_suffix='BER_PAM4',
-    use_log_y=True  # 默认开启对数坐标系，如需关闭改为 False
+    use_log_y=USE_LOG_Y_BER
 )

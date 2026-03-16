@@ -10,26 +10,37 @@ from run_equalization import run_equalization
 
 def main():
     # ================= 配置区域 =================
+    # 对比测评模式:
+    # - 'strict_uniform': 严格统一口径，强调公平基线
+    # - 'best_effort'   : 各模型可定向优化，强调可达上限
+    comparison_mode = 'best_effort'
+
     # 设置你要遍历的光功率范围
     # range(-15, -28, -1) 表示从 -15 开始，每次 -1，直到 -27 (不包含-28)
     # 即: -15, -16, ..., -27
-    power_list = range(-15, -28, -1)
+    power_list = range(-15, -25, -1)
 
     # 如果只想跑几个特定的，可以用列表: power_list = [-15, -20, -25]
-    # 消融实验配置（排除Volterra）
-    # 每个配置会在现有根目录下自动保存到独立子目录：
-    #   NN_Output_Data_mat/<ablation_tag>/
-    #   NN_Loss_Log_txt/<ablation_tag>/
-    ablation_profiles = [
+    # 实验配置（只需在这里改模型名）
+    # 每个配置会自动写入 get_config，生成独立实验名与输出文件名。
+    experiment_profiles = [
+        # 传统黑盒基线：逐符号单头 DNN
         {
-            'name': 'pam_only',
-            'use_loss_pam': True,
-            'use_loss_pcm': False
+            'name': 'baseline_dnn',
+            'model_name': 'DNN',
+            'comparison_mode': comparison_mode,
         },
+        # SH_DNN = pam_only（块级单头，不含PCM分支）
         {
-            'name': 'pam_pcm',
-            'use_loss_pam': True,
-            'use_loss_pcm': True
+            'name': 'sh_dnn',
+            'model_name': 'SH_DNN',
+            'comparison_mode': comparison_mode,
+        },
+        # PP_CDNN = pam_pcm（块级双头，PAM+PCM）
+        {
+            'name': 'pp_cdnn',
+            'model_name': 'PP_CDNN',
+            'comparison_mode': comparison_mode,
         }
     ]
     # ===========================================
@@ -37,11 +48,12 @@ def main():
     total_start_time = time.time()
 
     print(f"🚀 开始批量任务，将处理以下功率点: {list(power_list)}")
-    print(f"🧪 消融组: {[p['name'] for p in ablation_profiles]}\n")
+    print(f"⚖️ 对比模式: {comparison_mode}")
+    print(f"🧪 实验组: {[p['name'] for p in experiment_profiles]}\n")
 
-    for profile in ablation_profiles:
+    for profile in experiment_profiles:
         print(f"\n{'#' * 70}")
-        print(f"🧪 当前消融组: {profile['name']}")
+        print(f"🧪 当前实验组: {profile['name']}")
         print(f"{'#' * 70}")
 
         for power in power_list:
@@ -55,6 +67,9 @@ def main():
                 current_config = cfg_module.get_config(target_power=power, ablation_profile=profile)
 
                 print(f"配置已生成: {current_config.experiment_name}")
+                print(f"模型: {current_config.model_name} ({current_config.model_file}:{current_config.model_class})")
+                print(f"数据模式: {current_config.data_mode}")
+                print(f"对比模式: {current_config.comparison_mode}")
                 print(f"输出目录: {os.path.dirname(current_config.test_output_file)}")
                 print(f"日志目录: {os.path.dirname(current_config.loss_log_file)}")
 

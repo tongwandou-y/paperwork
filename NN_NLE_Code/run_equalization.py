@@ -7,7 +7,6 @@ import torch
 import scipy.io as spio
 import numpy as np
 import os
-from torch.utils.data import DataLoader, TensorDataset
 
 import configs as cfg
 from util.model_loader import build_model_from_config
@@ -44,6 +43,21 @@ def create_block_window_for_test(signal, taps, block_size):
         window = signal[start:end]
         X.append(window)
 
+    return np.array(X)
+
+
+def create_sliding_window_for_test(signal, taps):
+    """
+    逐符号测试特征构建:
+    - 与 MatDataset 的训练窗口保持一致
+    """
+    X = []
+    if len(signal) < taps:
+        print(f"警告：信号长度 ({len(signal)}) 小于抽头数 ({taps})，无法创建数据集。")
+        return np.array(X)
+
+    for i in range(len(signal) - taps + 1):
+        X.append(signal[i:i + taps])
     return np.array(X)
 
 
@@ -111,14 +125,18 @@ def run_equalization(configs):
         print(f"错误: 在 '{mat_file_path}' 中未找到 'dnn_test_input'。")
         return
 
-    # ====================== Z-score 归一化 ======================
-    # 【关键修改】训练时在 MatDatasetBlock 中对输入做了 Z-score 标准化，
-    # 测试时必须做同样的处理，否则数据分布不一致，模型输出无意义。
+    data_mode = getattr(configs, 'data_mode', 'block')
+    # ====================== 训练/测试一致的输入预处理 ======================
+    # 公平比较要求三种模型使用一致的输入口径：统一执行 Z-score 标准化。
     feat_mean = np.mean(distorted_signal)
     feat_std = np.std(distorted_signal)
     distorted_signal = (distorted_signal - feat_mean) / (feat_std + 1e-8)
     print(f"已对测试数据进行 Z-score 归一化 (mean={feat_mean:.4f}, std={feat_std:.4f})")
 
+    if data_mode == 'symbol':
+        print(f"为测试数据创建逐符号窗口 (Taps: {taps})...")
+        test_features = create_sliding_window_for_test(distorted_signal, taps)
+    else:
     # 物理块大小 G = quant / Mm (PAM4 -> Mm=2)
     block_size = configs.quant // 2
     print(f"为测试数据创建块级窗口 (Taps: {taps}, G: {block_size})...")
@@ -137,24 +155,31 @@ def run_equalization(configs):
     # 将所有测试特征一次性放到GPU (或CPU)
     test_features_tensor = test_features_tensor.to(device)
 
-    equalized_output = None
     # 禁用梯度计算以节省内存和加速
     with torch.no_grad():
-        equalized_output = model(test_features_tensor)
+        model_out = model(test_features_tensor)
 
     # 将结果移回CPU并转换为numpy数组
-    pam_out, pcm_out = equalized_output
+    if isinstance(model_out, (tuple, list)):
+        pam_out = model_out[0]
+        pcm_out = model_out[1] if len(model_out) > 1 else None
+    else:
+        pam_out = model_out
+        pcm_out = None
+
     pam_out_np = pam_out.cpu().numpy()
-    pcm_out_np = pcm_out.cpu().numpy().flatten()
+    pcm_out_np = pcm_out.cpu().numpy().flatten() if pcm_out is not None else np.array([], dtype=np.float32)
 
     # PAM 输出展平为符号序列
     pam_out_seq = pam_out_np.reshape(-1)
 
-    # ====================== Clamp PAM 输出 ======================
-    # Head-A 已移除 Tanh，输出可能超出 [-1, 1]
-    # MATLAB Rx_Part2 期望接收 [-1, 1] 范围的信号进行门限判决
-    pam_out_seq = np.clip(pam_out_seq, -1.0, 1.0)
-    print(f"PAM 输出已 clamp 到 [-1, 1] 范围 (实际范围: [{pam_out_np.min():.4f}, {pam_out_np.max():.4f}])")
+    # ====================== PAM 输出范围保护 ======================
+    # 与模型内输出激活配套，默认仅作为安全兜底，避免极端数值影响后级门限判决。
+    if bool(getattr(configs, 'inference_clip_pam', True)):
+        pam_out_seq = np.clip(pam_out_seq, -1.0, 1.0)
+        print(f"PAM 输出已 clip 到 [-1, 1] (raw范围: [{pam_out_np.min():.4f}, {pam_out_np.max():.4f}])")
+    else:
+        print(f"PAM 输出未 clip (raw范围: [{pam_out_np.min():.4f}, {pam_out_np.max():.4f}])")
 
     # --- 5. 保存结果到 .mat 文件 ---
     # MATLAB Rx_Part2_PostProcessing.m 期望一个名为 'received_eq' 的变量
@@ -169,6 +194,9 @@ def run_equalization(configs):
     print(f"均衡后的信号 (变量 'received_eq') 结果已保存到: {output_file}")
     print(f"PCM 回归输出 (变量 'pcm_eq') 结果已保存到: {output_file}")
     print(f"原始测试信号长度: {len(distorted_signal)} 符号")
+    if data_mode == 'symbol':
+        print(f"均衡后 PAM 符号长度: {len(pam_out_seq)} (逐符号输出)")
+    else:
     print(f"均衡后 PAM 符号长度: {len(pam_out_seq)} (块级输出)")
     print(f"均衡后 PCM 采样长度: {len(pcm_out_np)}")
 

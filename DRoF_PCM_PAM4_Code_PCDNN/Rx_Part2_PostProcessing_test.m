@@ -1,6 +1,6 @@
 % =========================================================================
 % DRoF - Rx_Part2_PostProcessing_test.m
-% 目的：加载DNN均衡后的 (PRBS31) 信号，并进行性能评估
+% 目的：加载 NN 均衡后的 (PRBS31) 信号，并进行性能评估
 %
 % 流程:
 % 1. 加载 PRBS31_test.mat (参数)
@@ -12,42 +12,41 @@ clc;clear;close all;
 
 %% === 1. 核心设置 (TEST) ===
 % ！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
-% 以后只需要修改本节中的四个变量即可
+% 以后只需要修改本节中的几个变量即可
 % ！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
 
 % 确保这里的设置与你运行 OFDM_PCM_OOKtx_auto.m (test模式) 时一致
 prbs_base_name = 'PRBS31';
 run_mode = 'test';
-received_optical_power = -20;  % 设置要分析的接收光功率
+received_optical_power = -17;  % 设置要分析的接收光功率
 quant = 8; % 手动修改为量化比特数 (必须与发射端一致！)
 
-% 模型类型选择: 'DNN' 或 'CNN' 或 `P-CDNN`,必须与 Python configs.py 中的 config.model_type 保持一致！
-model_type = 'DNN';
+% 模型类型: 'DNN' | 'SH_DNN' | 'PP_CDNN'
+% 必须与 Python configs.py 中的 config.model_type 保持一致
+model_type = 'PP_CDNN';
 
-% 消融实验组别选择: 'ablation_pam_only', 'ablation_pam_pcm' (必须与 Python config.py 中的 ablation_tag 保持一致)
-ablation_tag = 'ablation_pam_pcm';
+% 实验子目录标签（可留空自动查找）
+% - 指定时: 例如 'baseline_dnn' / 'sh_dnn' / 'pp_cdnn'
+% - 留空时: 在 NN_Output_Data_mat 下自动搜索匹配文件
+experiment_tag = '';
 
 root_base_dir = 'D:\paperwork\Experiment_Data\20Gsyms_20km';
 
 % [路径1] 理想标签所在的文件夹 (Data_For_NN_...mat)
 mat_input_path = fullfile(root_base_dir, 'NN_Input_Data_mat');
 
-% [路径2] Python输出结果所在的文件夹
-mat_output_path = fullfile(root_base_dir, 'NN_Output_Data_mat', ablation_tag);
+% [路径2] Python输出结果根目录
+mat_output_root = fullfile(root_base_dir, 'NN_Output_Data_mat');
 
 % [路径3] 参数文件所在的文件夹 (必须与发射端保存路径一致)
 param_load_path = fullfile(root_base_dir, 'TX_Matlab_Param_mat');
 
-% [路径4] 图片保存文件夹
-image_save_path = fullfile(root_base_dir, 'RX_Matlab_Result_Images_png', model_type, ablation_tag);
-if ~exist(image_save_path, 'dir'), mkdir(image_save_path); end
-
-% [路径5] 结果报告保存路径
-report_save_path = fullfile(root_base_dir, 'RX_Matlab_Result_Reports_txt', model_type, ablation_tag);
-if ~exist(report_save_path, 'dir'), mkdir(report_save_path); end
-
 disp(['模式: 评估 (TEST). 使用 ', prbs_base_name]);
-disp(['当前消融实验组别: ', ablation_tag]);
+if isempty(experiment_tag)
+    disp('当前实验组别: 自动搜索');
+else
+    disp(['当前实验组别: ', experiment_tag]);
+end
 
 % % [路径1] 理想标签所在的文件夹 (Data_For_NN_...mat)
 % mat_input_path = fullfile(root_base_dir, 'NN_Input_Data_mat');
@@ -113,7 +112,7 @@ Fs_AWG = DRoF_PCM_Parameters.Fs_AWG;
 beta = DRoF_PCM_Parameters.RRC_beta;
 span = DRoF_PCM_Parameters.RRC_N_span;
 
-%% === 3. 加载理想标签和DNN均衡结果 (TEST) ===
+%% === 3. 加载理想标签和NN均衡结果 (TEST) ===
 % -------------------------------------------------------------------------
 % 1. 加载理想测试标签 (来自 MATLAB Part 1)
 % -------------------------------------------------------------------------
@@ -129,19 +128,44 @@ end
 load(full_label_path, 'original_pam_test_data');
 
 % -------------------------------------------------------------------------
-% 2. 加载DNN均衡结果 (来自 Python)
+% 2. 加载 NN 均衡结果 (来自 Python)
 % -------------------------------------------------------------------------
-% 按照您指定的格式构造文件名: NN_Output_test_DNN_-27.mat
-% 对应格式: NN_Output_{run_mode}_{model_type}_{power}.mat
+% 文件格式: NN_Output_{run_mode}_{model_type}_{power}.mat
 dnn_output_filename = sprintf('NN_Output_%s_%s_%d.mat', run_mode, model_type, received_optical_power);
-dnn_output_full_path = fullfile(mat_output_path, dnn_output_filename);
 
-disp(['加载DNN均衡结果: ', dnn_output_full_path]);
-if ~exist(dnn_output_full_path, 'file')
-    error(['找不到文件: ', dnn_output_full_path, ' 请检查Python脚本是否已运行并保存为带功率后缀的文件名。']);
+if ~isempty(experiment_tag)
+    dnn_output_full_path = fullfile(mat_output_root, experiment_tag, dnn_output_filename);
+    if ~exist(dnn_output_full_path, 'file')
+        error(['找不到文件: ', dnn_output_full_path, ' 请检查模型名/功率/实验组是否一致。']);
+    end
+else
+    % 自动查找（优先根目录直放文件，其次递归子目录）
+    direct_candidate = fullfile(mat_output_root, dnn_output_filename);
+    if exist(direct_candidate, 'file')
+        dnn_output_full_path = direct_candidate;
+        experiment_tag = 'default';
+    else
+        candidates = dir(fullfile(mat_output_root, '**', dnn_output_filename));
+        if isempty(candidates)
+            error(['在 ', mat_output_root, ' 及其子目录下找不到文件: ', dnn_output_filename]);
+        end
+        % 若有多个候选，默认选择最新修改的文件
+        [~, newest_idx] = max([candidates.datenum]);
+        dnn_output_full_path = fullfile(candidates(newest_idx).folder, candidates(newest_idx).name);
+        [~, experiment_tag] = fileparts(candidates(newest_idx).folder);
+    end
 end
-disp(['加载DNN均衡结果: ', dnn_output_filename]);
+
+disp(['加载NN均衡结果: ', dnn_output_full_path]);
 load(dnn_output_full_path); % 加载一个名为 received_eq 的变量
+
+% [路径4] 图片保存文件夹（在识别出 experiment_tag 后再创建）
+image_save_path = fullfile(root_base_dir, 'RX_Matlab_Result_Images_png', model_type, experiment_tag);
+if ~exist(image_save_path, 'dir'), mkdir(image_save_path); end
+
+% [路径5] 结果报告保存路径
+report_save_path = fullfile(root_base_dir, 'RX_Matlab_Result_Reports_txt', model_type, experiment_tag);
+if ~exist(report_save_path, 'dir'), mkdir(report_save_path); end
 
 %% ==================== 信号格式化及参数自动推断 ======================
 % % 确保数据是行向量
@@ -211,13 +235,13 @@ h_eye = eyediagram(sig_smooth, 2 * upsample_factor);
 
 % ---------------- 自动保存眼图 ----------------
 % 动态生成眼图的标题
-dynamic_title = sprintf('Eye Diagram after DNN (PAM4 - %s TEST %d dBm)', prbs_base_name, received_optical_power);
+dynamic_title = sprintf('Eye Diagram after %s (PAM4 - %s TEST %d dBm)', model_type, prbs_base_name, received_optical_power);
 % title(dynamic_title);
 set(h_eye, 'Name', dynamic_title); % 设置窗口名称
 
 h_eye = gcf; % 获取当前图形句柄 (Get Current Figure)
 
-% 构造文件名: Eye_PRBS31_test_DNN_-15dBm.png
+% 构造文件名: Eye_PRBS31_test_<model_type>_-15dBm.png
 eye_filename = sprintf('Eye_%s_%s_%s_%ddBm.png', ...
     prbs_base_name, run_mode, model_type, received_optical_power);
 
@@ -248,7 +272,7 @@ end
 %% ====================== PAM4 判决与解码 =========================
 
 % --- PAM4 多门限判决 ---
-% DNN输出 received_eq 的范围是 [-1, 1]
+% NN输出 received_eq 的范围是 [-1, 1]
 % 对应的理想电平是 [-1, -1/3, +1/3, +1]
 % 判决门限是 -2/3, 0, 2/3
 PAM_re_gray_symbols = zeros(1, length(received_eq)); % 预分配内存
@@ -496,7 +520,7 @@ legend('Received Symbols', 'Ideal Constellation');
 % ---------------- [新增] 自动保存星座图 ----------------
 h_const = gcf; % 获取当前图形句柄
 
-% 构造文件名: Constellation_PRBS31_test_CNN_-15dBm.png
+% 构造文件名: Constellation_PRBS31_test_<model_type>_-15dBm.png
 const_filename = sprintf('Constellation_%s_%s_%s_%ddBm.png', ...
     prbs_base_name, run_mode, model_type, received_optical_power);
 
@@ -522,7 +546,7 @@ re_base2=reshape(re_base1',1,length(Txdata));
 
 %% === FINAL REPORT 输出 & 自动保存 ===
 
-% 1. 构造文件名: Report_PRBS31_test_CNN_-15dBm.txt
+% 1. 构造文件名: Report_PRBS31_test_<model_type>_-15dBm.txt
 report_filename = sprintf('Report_%s_%s_%s_%ddBm.txt', ...
     prbs_base_name, run_mode, model_type, received_optical_power);
 full_report_path = fullfile(report_save_path, report_filename);

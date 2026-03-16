@@ -147,6 +147,12 @@ class MatDataset(Dataset):
             ideal_signal = distorted_signal # 对于测试，标签可以暂时用自身替代，因为不会被用到
             print("加载测试数据...")
 
+        # 为了和 block 模式保持一致，symbol 模式同样执行 Z-score 标准化。
+        # 这样 DNN / SH_DNN / PP_CDNN 在输入预处理口径上公平可比。
+        feat_mean = np.mean(distorted_signal)
+        feat_std = np.std(distorted_signal)
+        distorted_signal = (distorted_signal - feat_mean) / (feat_std + 1e-8)
+
         # --- 3. 创建滑动窗口数据集 ---
         print(f"创建滑动窗口... (窗口总长度: {taps})")
         # 注意：这里的 'dnn_train_label' 已经是理想信号了

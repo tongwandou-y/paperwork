@@ -7,13 +7,41 @@ import os
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def _build_ablation_tag(use_pam, use_pcm):
-    """根据损失开关生成消融标签。"""
-    if use_pam and (not use_pcm):
-        return 'ablation_pam_only'
-    if use_pam and use_pcm:
-        return 'ablation_pam_pcm'
-    return f'ablation_custom_p{int(use_pam)}_m{int(use_pcm)}'
+def _sanitize_tag(tag):
+    """将实验标签标准化为安全目录名。"""
+    return str(tag).strip().lower().replace(' ', '_').replace('-', '_')
+
+
+def _build_experiment_tag(model_name, profile_name=None):
+    """
+    生成实验子目录标签（用于输出与日志分组）。
+    优先使用 batch_runner 传入的 profile.name，确保与实验命名一致。
+    """
+    if profile_name:
+        return _sanitize_tag(profile_name)
+
+    model_key = str(model_name).upper()
+    if model_key == 'DNN':
+        return 'baseline_dnn'
+    if model_key == 'SH_DNN':
+        return 'sh_dnn'
+    if model_key == 'PP_CDNN':
+        return 'pp_cdnn'
+    return _sanitize_tag(model_name)
+
+
+def _infer_data_mode(model_file, model_class):
+    """
+    根据模型名自动推断数据流模式:
+    - 'block': 块级输入/输出（如 PP_CDNN）
+    - 'symbol': 传统逐符号输入/输出（如 DNN）
+    """
+    model_key = f"{model_file}|{model_class}".lower()
+    if ('pp_cdnn' in model_key) or ('pp-cdnn' in model_key):
+        return 'block'
+    if ('sh_dnn' in model_key) or ('sh-dnn' in model_key):
+        return 'block'
+    return 'symbol'
 
 
 def get_config(target_power=None, ablation_profile=None):
@@ -24,6 +52,21 @@ def get_config(target_power=None, ablation_profile=None):
                          - 如果为 None: 使用默认值 (用于 train.py 单独调试)
     """
     config = ml_collections.ConfigDict()
+
+    # =========================================================
+    # 0. 对比测评模式（公平性口径）
+    # =========================================================
+    # strict_uniform:
+    #   - 统一选模口径（全部按 pam_loss）
+    #   - 统一多任务超参默认值（不过度为 PP_CDNN 定向增强）
+    # best_effort:
+    #   - 允许按模型定向优化超参（突出各自可达上限）
+    comparison_mode = 'strict_uniform'
+    if ablation_profile is not None and 'comparison_mode' in ablation_profile:
+        comparison_mode = str(ablation_profile['comparison_mode']).strip().lower()
+    if comparison_mode not in {'strict_uniform', 'best_effort'}:
+        raise ValueError(f"未知 comparison_mode: {comparison_mode}")
+    config.comparison_mode = comparison_mode
 
     ## =========================================================
     ## 1. 基础物理与模型设置 (Basic Settings)
@@ -46,18 +89,31 @@ def get_config(target_power=None, ablation_profile=None):
     config.quant = quant_bits
 
     # --------------------------------------------------------------
-    # 之后切换模型只需要在修改config.model_file和config.model_class这两个变量即可
-    # 模型的文件需要放在NN_NLE_Code/models/model/下
+    # 之后切换模型只需要修改 config.model_name
+    # 模型文件位于 NN_NLE_Code/models/model/
     # --------------------------------------------------------------
 
-    # 模型选择（支持任意 models/model/*.py 文件名）
-    # 例如: 'PP_CDNN.py'、'DNN.py'、'MyNewModel.py'
-    config.model_file = 'PP_CDNN.py'
-    # 模型类名（该 .py 文件中的 nn.Module 类名）
-    # 若留空(None)，运行时会自动寻找第一个 nn.Module 子类
-    config.model_class = 'PP_CDNN'
+    # 模型选择（你只需改这一个变量）
+    # 内置: 'PP_CDNN' / 'DNN'
+    # 也支持自定义模型名（默认映射为 <name>.py + <name> 类）
+    config.model_name = 'PP_CDNN'
+    if ablation_profile is not None and 'model_name' in ablation_profile:
+        config.model_name = str(ablation_profile['model_name'])
+    model_registry = {
+        'PP_CDNN': ('PP_CDNN.py', 'PP_CDNN'),
+        'DNN': ('DNN.py', 'DNN'),
+        'SH_DNN': ('SH_DNN.py', 'SH_DNN'),
+    }
+    config.model_file, config.model_class = model_registry.get(
+        config.model_name,
+        (f"{config.model_name}.py", config.model_name)
+    )
+    # 若需要自动发现类名，可改为 None
+    # config.model_class = None
     # 用于实验名与输出文件命名的模型标签（默认取文件名去后缀）
     config.model_type = os.path.splitext(config.model_file)[0]
+    # 自动根据模型推断数据流模式，确保用户只改模型名即可切换全流程
+    config.data_mode = _infer_data_mode(config.model_file, config.model_class)
 
     # PRBS 序列名称
     train_prbs = 'PRBS23'
@@ -72,24 +128,34 @@ def get_config(target_power=None, ablation_profile=None):
     config.epoch = 300           # 增大训练轮次，给CosineAnnealing更多空间
     config.learn_rate = 0.001    # Adam初始学习率
     config.init_type = 'orthogonal'  # 权重初始化方法
+    # PAM输出激活：建议使用 tanh 与 MATLAB 的阈值判决口径保持一致
+    # 可选: 'tanh' | 'identity'
+    config.pam_output_activation = 'tanh'
+    # 推理阶段是否额外 clip 到 [-1, 1]，通常作为安全兜底
+    config.inference_clip_pam = True
 
     ## =========================================================
-    ## 3.1 消融与损失权重开关
+    ## 3.1 任务定义（按模型强绑定）
     ## =========================================================
-    # 是否启用各损失项
-    config.use_loss_pam = True
-    config.use_loss_pcm = True
-    if ablation_profile is not None:
-        config.use_loss_pam = bool(ablation_profile.get('use_loss_pam', config.use_loss_pam))
-        config.use_loss_pcm = bool(ablation_profile.get('use_loss_pcm', config.use_loss_pcm))
 
-    # 一致性损失在当前版本已移除（后续改为级联双头再验证）
-    config.use_loss_cons = False
+    # 由模型定义任务
+    # DNN    : 传统黑盒，symbol->symbol，任务= pam
+    # SH_DNN : 块级单头，任务= pam
+    # PP_CDNN: 块级双头，任务= pam_pcm
+    model_name_upper = str(config.model_name).upper()
+    if model_name_upper in {'DNN', 'SH_DNN'}:
+        config.task_type = 'pam'
+    elif model_name_upper == 'PP_CDNN':
+        config.task_type = 'pam_pcm'
+    else:
+        # 对未知自定义模型采用保守策略：symbol模式->pam，block模式->pam_pcm
+        config.task_type = 'pam_pcm' if config.data_mode == 'block' else 'pam'
 
     # 损失权重
     config.loss_alpha = 1.0  # L_pcm 权重
     # 最优模型判据: 'pam_loss' | 'total_loss' | 'hybrid'
-    # 建议通信性能优先时使用 pam_loss
+    # - pam_loss: 优先SER/BER
+    # - hybrid  : 在PAM与PCM之间折中，通常更利于SQNR/EVM
     config.best_model_metric = 'pam_loss'
 
     ## =========================================================
@@ -109,15 +175,25 @@ def get_config(target_power=None, ablation_profile=None):
     # 主任务优先：对PAM项给予固定优先系数，确保SER/BER目标不被辅助任务稀释
     config.pam_priority_factor = 1.20
 
-    # 辅助任务限幅：限制 (PCM+CONS) 贡献不超过 PAM项的一定比例（自适应，不是分段）
+    # 辅助任务限幅：限制 PCM 贡献不超过 PAM项的一定比例（自适应，不是分段）
     config.aux_to_pam_max_ratio = 0.80
 
-    # 在 PAM+PCM 组中提升 PCM 影响力，放大多任务收益
-    if config.use_loss_pam and config.use_loss_pcm:
-        config.loss_alpha = 2.0
-        config.pam_priority_factor = 1.00
-        config.aux_to_pam_max_ratio = 1.50
-        config.loss_ema_momentum = 0.95
+    # 在 PAM+PCM 任务中，按 comparison_mode 选择策略：
+    # - strict_uniform: 保持统一口径，不对 PP_CDNN 做额外“特供”强化
+    # - best_effort: 允许对 PP_CDNN 做定向优化，追求模型上限
+    if config.task_type == 'pam_pcm':
+        if config.comparison_mode == 'best_effort':
+            config.loss_alpha = 2.0
+            config.pam_priority_factor = 1.00
+            config.aux_to_pam_max_ratio = 1.50
+            config.loss_ema_momentum = 0.95
+            config.best_model_metric = 'hybrid'
+        else:
+            config.loss_alpha = 1.0
+            config.pam_priority_factor = 1.20
+            config.aux_to_pam_max_ratio = 0.80
+            config.loss_ema_momentum = 0.98
+            config.best_model_metric = 'pam_loss'
 
     ## =========================================================
     ## 2. 目录与路径设置 (Directories & Paths)
@@ -130,8 +206,15 @@ def get_config(target_power=None, ablation_profile=None):
     # Loss 日志存放目录
     loss_log_root_dir = r'E:\yinshibo\paperwork\Experiment_Data\20Gsyms_20km\NN_Loss_Log_txt'
 
-    # 消融标签：作为现有保存根路径的下级目录，不破坏原有目录体系
-    config.ablation_tag = _build_ablation_tag(config.use_loss_pam, config.use_loss_pcm)
+    # 实验标签：作为现有保存根路径的下级目录，不破坏原有目录体系
+    # 规则：优先使用 batch_runner 里的 profile.name；否则按模型/开关自动生成。
+    profile_name = None
+    if ablation_profile is not None:
+        profile_name = ablation_profile.get('name', None)
+    config.ablation_tag = _build_experiment_tag(
+        model_name=config.model_name,
+        profile_name=profile_name
+    )
 
     output_dir = os.path.join(output_root_dir, config.ablation_tag)
     loss_log_dir = os.path.join(loss_log_root_dir, config.ablation_tag)
